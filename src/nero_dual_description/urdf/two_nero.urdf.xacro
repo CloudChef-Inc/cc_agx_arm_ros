@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+<!--
+  two_nero.urdf.xacro
+
+  Composes two AgileX Nero arms (via the nero_arm macro) as left/right
+  "shoulders" on a simple torso. The torso is a box stand-in; replace
+  it with your real mount geometry if you have meshes for it.
+
+  Tuning: the properties at the top control torso size and where the
+  shoulders sit. The shoulder rpy values rotate each arm's base so
+  that it faces outward along ±Y (the "two shoulders" effect).
+-->
+<robot name="two_nero" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find nero_dual_description)/urdf/nero_arm_macro.xacro"/>
+
+  <!-- ===== Mount geometry (edit to match your physical rig) ===== -->
+  <xacro:property name="torso_depth"       value="0.10"/>  <!-- X size -->
+  <xacro:property name="torso_width"       value="0.30"/>  <!-- Y size -->
+  <xacro:property name="torso_height"      value="0.60"/>  <!-- Z size -->
+  <xacro:property name="shoulder_y_offset" value="${torso_width / 2.0}"/>
+  <xacro:property name="shoulder_z"        value="${torso_height - 0.05}"/>
+
+  <!-- Roll each base outward so the arm's +Z axis points along ±Y instead
+       of +Z. -pi/2 for the left shoulder, +pi/2 for the right. -->
+  <xacro:property name="left_shoulder_rpy"  value="${-pi / 2} 0 0"/>
+  <xacro:property name="right_shoulder_rpy" value="${ pi / 2} 0 0"/>
+
+  <!-- ===== World + torso ===== -->
+  <link name="world"/>
+
+  <link name="torso_base">
+    <visual>
+      <origin xyz="0 0 ${torso_height / 2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${torso_depth} ${torso_width} ${torso_height}"/>
+      </geometry>
+      <material name="torso_grey">
+        <color rgba="0.35 0.38 0.42 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${torso_height / 2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${torso_depth} ${torso_width} ${torso_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 ${torso_height / 2}"/>
+      <mass value="5.0"/>
+      <inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/>
+    </inertial>
+  </link>
+
+  <joint name="world_to_torso" type="fixed">
+    <parent link="world"/>
+    <child  link="torso_base"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Shoulder mount pads: empty anchor links at the rotated mount pose. -->
+  <link name="left_shoulder_mount"/>
+  <joint name="torso_to_left_shoulder" type="fixed">
+    <parent link="torso_base"/>
+    <child  link="left_shoulder_mount"/>
+    <origin xyz="0 ${ shoulder_y_offset} ${shoulder_z}"
+            rpy="${left_shoulder_rpy}"/>
+  </joint>
+
+  <link name="right_shoulder_mount"/>
+  <joint name="torso_to_right_shoulder" type="fixed">
+    <parent link="torso_base"/>
+    <child  link="right_shoulder_mount"/>
+    <origin xyz="0 ${-shoulder_y_offset} ${shoulder_z}"
+            rpy="${right_shoulder_rpy}"/>
+  </joint>
+
+  <!-- ===== Two arm instances ===== -->
+  <xacro:nero_arm prefix="left_" parent="left_shoulder_mount">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:nero_arm>
+
+  <xacro:nero_arm prefix="right_" parent="right_shoulder_mount">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:nero_arm>
+
+</robot>
