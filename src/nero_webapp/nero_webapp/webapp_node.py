@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 from ament_index_python.packages import get_package_share_directory
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import rclpy
@@ -166,9 +166,27 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    # Expose the upstream agx_arm_description share dir so the browser can
+    # fetch the Nero URDF + meshes directly (DAE visual meshes render the
+    # real arm geometry client-side via urdf-loader).
+    agx_share = Path(get_package_share_directory("agx_arm_description"))
+    app.mount(
+        "/pkg/agx_arm_description",
+        StaticFiles(directory=str(agx_share)),
+        name="agx_pkg",
+    )
+
+    nero_urdf_path = (
+        agx_share / "agx_arm_urdf" / "nero" / "urdf" / "nero_description.urdf"
+    )
+
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
         return HTMLResponse((static_dir / "index.html").read_text())
+
+    @app.get("/nero_urdf")
+    async def nero_urdf() -> Response:
+        return Response(nero_urdf_path.read_text(), media_type="application/xml")
 
     @app.get("/joint_limits")
     async def joint_limits() -> Dict:
