@@ -160,16 +160,19 @@ function applyArmPose(side) {
 }
 
 function resizeViewport() {
-  const w = viewport.clientWidth;
-  const h = viewport.clientHeight;
+  const w = Math.max(1, viewport.clientWidth);
+  const h = Math.max(1, viewport.clientHeight);
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
 window.addEventListener("resize", resizeViewport);
+// Observe the container too — grid/flex layout changes don't always fire window resize.
+new ResizeObserver(resizeViewport).observe(viewport);
 
 function animate() {
   requestAnimationFrame(animate);
+  resizeViewport();
   controls.update();
   renderer.render(scene, camera);
 }
