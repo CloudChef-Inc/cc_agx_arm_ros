@@ -114,21 +114,19 @@ async function buildArms() {
   armRobots.left  = leftRobot;
   armRobots.right = rightRobot;
 
-  // URDF base is Z-up; three.js scene is Y-up. Wrap each robot in a Group
-  // that does the Z-up → Y-up axis swap and positions it as a shoulder.
-  // Rotating -90° around X maps URDF +Z (up) to three.js +Y (up).
+  // The Nero URDF's arm chain extends along its own +Z axis. Three.js is
+  // Y-up, so the URDF's +Z lands on world +Z — already horizontal, which
+  // is what we want for side-mounted shoulders. We just need to position
+  // each arm at its shoulder and flip the right one 180° around Y so its
+  // chain points the opposite direction, away from the torso.
   const leftMount = new THREE.Group();
-  leftMount.rotation.x = -Math.PI / 2;
   leftMount.position.set(0, SHOULDER_Z, SHOULDER_Y);
-  // Point the arm outward to the left (three.js +Y after the axis swap).
-  leftMount.rotateZ(Math.PI / 2);
   leftMount.add(leftRobot);
   scene.add(leftMount);
 
   const rightMount = new THREE.Group();
-  rightMount.rotation.x = -Math.PI / 2;
   rightMount.position.set(0, SHOULDER_Z, -SHOULDER_Y);
-  rightMount.rotateZ(-Math.PI / 2);
+  rightMount.rotation.y = Math.PI;
   rightMount.add(rightRobot);
   scene.add(rightMount);
 
