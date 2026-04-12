@@ -200,7 +200,9 @@ async function buildArms() {
   //   left  arm: Ry(-90°)  →  URDF +Z lands on world -X (robot's left).
   const rightMount = new THREE.Group();
   rightMount.position.set( SHOULDER_X, 0, SHOULDER_Z);
-  rightMount.rotation.y = Math.PI / 2;
+  // Ry(+90°) puts the chain along +X; additional Rx(180°) rolls the arm
+  // 180° around its own (now world-X) chain axis so it sits right-side-up.
+  rightMount.rotation.set(Math.PI, Math.PI / 2, 0);
   rightMount.add(rightRobot);
   scene.add(rightMount);
 
