@@ -10,10 +10,19 @@ import { ColladaLoader } from "three/addons/loaders/ColladaLoader.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import URDFLoader from "urdf-loader";
 
-// ------------ torso + mount geometry (matches two_nero.urdf.xacro) ------
-const TORSO_SIZE  = [0.10, 0.30, 0.60]; // depth (x), width (y), height (z)
-const SHOULDER_Y  = 0.15; // lateral offset from centerline
-const SHOULDER_Z  = 0.55; // height above floor at the shoulder mount
+// ------------ scene convention ------------------------------------------
+// World axes (overrides three.js default Y-up):
+//   +X = robot's RIGHT          -X = robot's LEFT
+//   +Y = robot's FRONT          -Y = robot's BACK
+//   +Z = UP                     -Z = DOWN
+//
+// Right arm mounts at +X and extends along +X.
+// Left arm  mounts at -X and extends along -X.
+const TORSO_X = 0.30;  // width  (left↔right)
+const TORSO_Y = 0.10;  // depth  (front↔back)
+const TORSO_Z = 0.60;  // height (down↔up)
+const SHOULDER_X = 0.15; // lateral offset of shoulder from centerline
+const SHOULDER_Z = 0.55; // shoulder height above floor
 
 // ------------ DOM bootstrap ---------------------------------------------
 const statusEl = document.getElementById("status");
@@ -32,11 +41,18 @@ const sliderState = {
 const armRobots = { left: null, right: null };
 
 // ------------ three.js scene --------------------------------------------
+// Switch the world to Z-up before creating any object whose orientation
+// depends on the up vector (camera, OrbitControls).
+THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
+
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x07090c);
+// Medium blue-grey: contrasts with the silver/black Nero meshes.
+scene.background = new THREE.Color(0x3a4855);
 
 const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 50);
-camera.position.set(1.8, 1.5, 1.8);
+camera.up.set(0, 0, 1);
+// Position the camera in front-right of the robot, slightly above shoulder.
+camera.position.set(1.8, -2.2, 1.4);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -44,27 +60,89 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 viewport.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0.5, 0);
+controls.target.set(0, 0, SHOULDER_Z);
 controls.update();
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
 const key = new THREE.DirectionalLight(0xffffff, 0.9);
-key.position.set(2, 3, 2);
+key.position.set(2, -2, 3);
 scene.add(key);
-const fill = new THREE.DirectionalLight(0xffffff, 0.3);
-fill.position.set(-2, 1, -2);
+const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+fill.position.set(-2, 2, 1);
 scene.add(fill);
 
-// Floor grid.
-scene.add(new THREE.GridHelper(4, 16, 0x2a2f37, 0x1a1d22));
+// Floor grid: GridHelper is in the XZ plane by default (for Y-up worlds).
+// Rotate it 90° around X so it lies in the XY plane (the floor in Z-up).
+const grid = new THREE.GridHelper(4, 16, 0x6b7785, 0x4a5460);
+grid.rotation.x = Math.PI / 2;
+scene.add(grid);
 
-// Torso box to give the arms a home.
+// Torso pillar standing along +Z. BoxGeometry params are (X, Y, Z).
 const torso = new THREE.Mesh(
-  new THREE.BoxGeometry(TORSO_SIZE[0], TORSO_SIZE[2], TORSO_SIZE[1]),
-  new THREE.MeshStandardMaterial({ color: 0x2a2f37, roughness: 0.7 }),
+  new THREE.BoxGeometry(TORSO_X, TORSO_Y, TORSO_Z),
+  new THREE.MeshStandardMaterial({ color: 0x1f242b, roughness: 0.7 }),
 );
-torso.position.set(0, TORSO_SIZE[2] / 2, 0);
+torso.position.set(0, 0, TORSO_Z / 2);
 scene.add(torso);
+
+// ------------ axes + front marker ---------------------------------------
+// Build a labeled arrow for each of ±X, ±Y, ±Z so the user can describe
+// orientation problems unambiguously.
+function makeTextSprite(text, color = "#ffffff") {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "rgba(0,0,0,0)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.font = "bold 64px -apple-system, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = "rgba(0,0,0,0.85)";
+  ctx.strokeText(text, 128, 64);
+  ctx.fillStyle = color;
+  ctx.fillText(text, 128, 64);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(0.20, 0.10, 1);
+  sprite.renderOrder = 999;
+  return sprite;
+}
+
+function addAxisArrow(dir, length, color, label) {
+  const v = new THREE.Vector3(...dir).normalize();
+  const arrow = new THREE.ArrowHelper(
+    v,
+    new THREE.Vector3(0, 0, 0),
+    length,
+    color,
+    length * 0.18,
+    length * 0.10,
+  );
+  scene.add(arrow);
+  const tip = v.clone().multiplyScalar(length * 1.18);
+  const sprite = makeTextSprite(label, "#" + color.toString(16).padStart(6, "0"));
+  sprite.position.copy(tip);
+  scene.add(sprite);
+}
+
+const AXIS_LEN = 0.45;
+addAxisArrow([ 1, 0, 0], AXIS_LEN,        0xff5a5a, "+X (right)");
+addAxisArrow([-1, 0, 0], AXIS_LEN * 0.7,  0x884040, "-X (left)");
+addAxisArrow([ 0, 1, 0], AXIS_LEN,        0x5aff7a, "+Y (front)");
+addAxisArrow([ 0,-1, 0], AXIS_LEN * 0.7,  0x408840, "-Y (back)");
+addAxisArrow([ 0, 0, 1], AXIS_LEN,        0x5aaaff, "+Z (up)");
+addAxisArrow([ 0, 0,-1], AXIS_LEN * 0.7,  0x405588, "-Z (down)");
+
+// "FRONT" tag floating in front of the torso along +Y so it's obvious
+// which direction the robot is supposed to face.
+const frontTag = makeTextSprite("FRONT (+Y)", "#ffd56a");
+frontTag.position.set(0, 0.75, 0.05);
+frontTag.scale.set(0.50, 0.25, 1);
+scene.add(frontTag);
 
 // ------------ URDF loading ----------------------------------------------
 const loadingManager = new THREE.LoadingManager();
@@ -114,21 +192,23 @@ async function buildArms() {
   armRobots.left  = leftRobot;
   armRobots.right = rightRobot;
 
-  // The Nero URDF's arm chain extends along its own +Z axis. Three.js is
-  // Y-up, so the URDF's +Z lands on world +Z — already horizontal, which
-  // is what we want for side-mounted shoulders. We just need to position
-  // each arm at its shoulder and flip the right one 180° around Y so its
-  // chain points the opposite direction, away from the torso.
-  const leftMount = new THREE.Group();
-  leftMount.position.set(0, SHOULDER_Z, SHOULDER_Y);
-  leftMount.add(leftRobot);
-  scene.add(leftMount);
-
+  // The Nero URDF's arm chain extends along its own +Z axis. World is now
+  // Z-up, so an unrotated arm would also point straight up — wrong for a
+  // side-mounted shoulder. We rotate each arm 90° around the world Y axis
+  // so its chain becomes horizontal:
+  //   right arm: Ry(+90°)  →  URDF +Z lands on world +X (robot's right).
+  //   left  arm: Ry(-90°)  →  URDF +Z lands on world -X (robot's left).
   const rightMount = new THREE.Group();
-  rightMount.position.set(0, SHOULDER_Z, -SHOULDER_Y);
-  rightMount.rotation.y = Math.PI;
+  rightMount.position.set( SHOULDER_X, 0, SHOULDER_Z);
+  rightMount.rotation.y = Math.PI / 2;
   rightMount.add(rightRobot);
   scene.add(rightMount);
+
+  const leftMount = new THREE.Group();
+  leftMount.position.set(-SHOULDER_X, 0, SHOULDER_Z);
+  leftMount.rotation.y = -Math.PI / 2;
+  leftMount.add(leftRobot);
+  scene.add(leftMount);
 
   applyArmPose("left");
   applyArmPose("right");
