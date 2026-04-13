@@ -38,12 +38,13 @@ from sensor_msgs.msg import JointState
 import uvicorn
 
 
-# Default Nero joint names (7 revolute). Match nero_description.urdf.
+# Default Nero joint names (7 revolute + gripper). Match nero_description.urdf.
 DEFAULT_JOINT_NAMES: List[str] = [
     "joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7",
+    "gripper",
 ]
 
-# Hard limits from nero_description.urdf, in radians.
+# Hard limits from nero_description.urdf (radians) + gripper (metres, 0–0.1 m).
 JOINT_LIMITS: List[tuple[float, float]] = [
     (-2.70526,    2.70526),   # joint1
     (-1.74,       1.74),      # joint2
@@ -52,6 +53,7 @@ JOINT_LIMITS: List[tuple[float, float]] = [
     (-2.75,       2.75),      # joint5
     (-0.73,       0.95),      # joint6
     (-1.5707963,  1.5707963), # joint7
+    ( 0.0,        0.1),       # gripper width (metres)
 ]
 
 
