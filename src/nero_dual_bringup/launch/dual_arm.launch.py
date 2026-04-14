@@ -69,15 +69,16 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[robot_description],
     )
 
-    single_arm_launch = PythonLaunchDescriptionSource(
-        PathJoinSubstitution([
-            FindPackageShare("agx_arm_ctrl"),
-            "launch", "start_single_agx_arm.launch.py",
-        ])
-    )
+    # Each IncludeLaunchDescription needs its OWN PythonLaunchDescriptionSource —
+    # in Jazzy, sharing a source between includes causes the inner Node entities
+    # to be executed twice, which raises "executed more than once".
+    single_arm_launch_path = PathJoinSubstitution([
+        FindPackageShare("agx_arm_ctrl"),
+        "launch", "start_single_agx_arm.launch.py",
+    ])
 
     left_arm = IncludeLaunchDescription(
-        single_arm_launch,
+        PythonLaunchDescriptionSource(single_arm_launch_path),
         launch_arguments={
             "namespace":     "left",
             "can_port":      LaunchConfiguration("left_can"),
@@ -87,7 +88,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     right_arm = IncludeLaunchDescription(
-        single_arm_launch,
+        PythonLaunchDescriptionSource(single_arm_launch_path),
         launch_arguments={
             "namespace":     "right",
             "can_port":      LaunchConfiguration("right_can"),
