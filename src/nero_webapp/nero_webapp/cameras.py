@@ -32,23 +32,31 @@ def _auto_crop_rect(frame: np.ndarray, threshold: int = 16
     sensor with dark vignetting around it. We threshold at a low value
     and take the bounding box of the bright region, then grow it to a
     square centered on the bbox so the crop stays symmetric.
+
+    Threshold is applied to a per-pixel brightness proxy (max of RGB).
+    A row/column is considered "bright" only if > ~0.5% of its pixels
+    exceed the threshold, which suppresses hot pixels / sensor noise
+    bleeding into the "dark" vignette.
     """
     if frame.ndim == 3:
         gray = frame.max(axis=2)
     else:
         gray = frame
+    h, w = gray.shape[:2]
     mask = gray > threshold
-    rows = np.any(mask, axis=1)
-    cols = np.any(mask, axis=0)
-    if not rows.any() or not cols.any():
+    # Noise-robust presence test: a row is "bright" only if a non-trivial
+    # fraction of its pixels pass the threshold.
+    row_bright = mask.sum(axis=1) > max(4, int(w * 0.005))
+    col_bright = mask.sum(axis=0) > max(4, int(h * 0.005))
+    if not row_bright.any() or not col_bright.any():
         return None
-    y_idx = np.where(rows)[0]
-    x_idx = np.where(cols)[0]
+    y_idx = np.where(row_bright)[0]
+    x_idx = np.where(col_bright)[0]
     y0, y1 = int(y_idx[0]), int(y_idx[-1])
     x0, x1 = int(x_idx[0]), int(x_idx[-1])
-    # Reject bogus detections (entire sensor is bright → no vignette).
-    h, w = frame.shape[:2]
-    if (y1 - y0 + 1) >= int(h * 0.98) and (x1 - x0 + 1) >= int(w * 0.98):
+    # Reject bogus detections — fall back to no crop if the bright area
+    # is the entire sensor (no vignette present at all).
+    if (y1 - y0 + 1) >= int(h * 0.995) and (x1 - x0 + 1) >= int(w * 0.995):
         return None
     size = max(x1 - x0, y1 - y0)
     cx = (x0 + x1) // 2
@@ -209,7 +217,7 @@ class FisheyeCamera:
                 if not ok:
                     time.sleep(0.005)
                     continue
-                if self.auto_circle_crop and crop_rect is None and detection_attempts < 5:
+                if self.auto_circle_crop and crop_rect is None and detection_attempts < 10:
                     detection_attempts += 1
                     rect = _auto_crop_rect(frame)
                     if rect is not None:
@@ -218,6 +226,12 @@ class FisheyeCamera:
                         logger.info(
                             "fisheye: auto circle-crop %dx%d → %dx%d at (%d,%d)-(%d,%d)",
                             self.width, self.height, x1 - x0, y1 - y0, x0, y0, x1, y1,
+                        )
+                    elif detection_attempts >= 10:
+                        logger.warning(
+                            "fisheye: auto circle-crop gave up after %d attempts — "
+                            "using full sensor (frame shape %s)",
+                            detection_attempts, frame.shape,
                         )
                 if crop_rect is not None:
                     x0, y0, x1, y1 = crop_rect
