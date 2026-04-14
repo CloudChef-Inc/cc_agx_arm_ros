@@ -224,6 +224,15 @@ function applyArmPose(side) {
     const j = robot.joints[jointNames[i]];
     if (j) j.setJointValue(cmd[i]);
   }
+  // Drive the two prismatic gripper fingers from the "gripper" width value.
+  const gi = jointNames.indexOf("gripper");
+  if (gi >= 0) {
+    const w = cmd[gi];  // width in metres (0–0.1)
+    const j1 = robot.joints["gripper_joint1"];
+    const j2 = robot.joints["gripper_joint2"];
+    if (j1) j1.setJointValue(w * 0.5);   // one jaw opens +
+    if (j2) j2.setJointValue(-w * 0.5);  // other jaw opens -
+  }
 }
 
 // ------------ viewport sizing -------------------------------------------

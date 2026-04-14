@@ -178,9 +178,9 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
         name="agx_pkg",
     )
 
-    nero_urdf_path = (
-        agx_share / "agx_arm_urdf" / "nero" / "urdf" / "nero_description.urdf"
-    )
+    # Hand-merged flat URDF (arm + Pika gripper), shipped in our static dir.
+    # Loaded once at startup so the GET /nero_urdf path is a cheap memory read.
+    nero_urdf_xml = (static_dir / "nero_with_gripper.urdf").read_text()
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
@@ -188,7 +188,7 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
 
     @app.get("/nero_urdf")
     async def nero_urdf() -> Response:
-        return Response(nero_urdf_path.read_text(), media_type="application/xml")
+        return Response(nero_urdf_xml, media_type="application/xml")
 
     @app.get("/joint_limits")
     async def joint_limits() -> Dict:
