@@ -90,9 +90,9 @@ class WebappNode(Node):
         # parameter. The three feeds are: the Pika's fisheye webcam, and the
         # RealSense D405's color + colorized depth streams.
         self.declare_parameter("fisheye_device", "")
-        self.declare_parameter("fisheye_width",  1280)
-        self.declare_parameter("fisheye_height", 720)
-        self.declare_parameter("fisheye_fps",    60)
+        self.declare_parameter("fisheye_width",  1920)
+        self.declare_parameter("fisheye_height", 1200)
+        self.declare_parameter("fisheye_fps",    30)
         self.declare_parameter("realsense_serial",  "")
         self.declare_parameter("realsense_enable",  True)
         self.declare_parameter("realsense_color_w", 1280)
