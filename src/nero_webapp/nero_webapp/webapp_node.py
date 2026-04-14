@@ -97,6 +97,10 @@ class WebappNode(Node):
         # the black vignette, saves encode bandwidth, and makes the tile
         # fill more useful area with content pixels.
         self.declare_parameter("fisheye_circle_crop", True)
+        # V4L2 exposure_time_absolute value (in 100us units). Forces
+        # manual exposure so the camera doesn't halve framerate to
+        # gather more light in dim scenes. 200 = 20ms.
+        self.declare_parameter("fisheye_exposure", 200)
         self.declare_parameter("realsense_serial",  "")
         self.declare_parameter("realsense_enable",  True)
         self.declare_parameter("realsense_color_w", 1280)
@@ -172,6 +176,7 @@ class WebappNode(Node):
                 height=self.get_parameter("fisheye_height").get_parameter_value().integer_value,
                 fps=self.get_parameter("fisheye_fps").get_parameter_value().integer_value,
                 auto_circle_crop=self.get_parameter("fisheye_circle_crop").get_parameter_value().bool_value,
+                exposure_manual_value=self.get_parameter("fisheye_exposure").get_parameter_value().integer_value,
             )
             if cam.start():
                 self.fisheye = cam

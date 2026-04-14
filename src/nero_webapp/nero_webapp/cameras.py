@@ -159,21 +159,53 @@ class FisheyeCamera:
 
     Negotiates MJPEG from V4L2 so we don't pay for full-resolution YUYV
     DMA. OpenCV decodes MJPEG → BGR24 on each read().
+
+    Default fps on UVC cameras with auto-exposure tends to cap at 15
+    when the driver extends exposure time in dim light. We force manual
+    exposure after the OpenCV open (OpenCV itself resets controls) so
+    we get our configured framerate regardless of lighting.
     """
 
     def __init__(self, device_path: str, width: int, height: int,
                  fps: int, overlay_label: str = "fisheye",
-                 auto_circle_crop: bool = True) -> None:
+                 auto_circle_crop: bool = True,
+                 exposure_manual_value: int = 200) -> None:
         self.device_path = device_path
         self.width = width
         self.height = height
         self.fps = fps
         self.overlay_label = overlay_label
         self.auto_circle_crop = auto_circle_crop
+        # V4L2 exposure_time_absolute in units of 100 µs. 200 = 20ms
+        # (well under the 33ms frame budget at 30fps).
+        self.exposure_manual_value = exposure_manual_value
         self.frames = LatestFrame()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._started_ok = threading.Event()
+
+    def _configure_manual_exposure(self) -> None:
+        """Force V4L2 auto_exposure=1 (Manual) + exposure_time_absolute.
+
+        Called AFTER cap.open() — OpenCV resets controls to driver
+        defaults on open, so setting these via v4l2-ctl beforehand is
+        lost. Running it post-open sticks.
+        """
+        import subprocess
+        try:
+            subprocess.run(
+                ["v4l2-ctl", "-d", self.device_path,
+                 "-c", "auto_exposure=1",
+                 "-c", f"exposure_time_absolute={self.exposure_manual_value}"],
+                check=False, timeout=2.0,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            logger.info(
+                "fisheye: forced manual exposure (time=%d = %.1fms)",
+                self.exposure_manual_value, self.exposure_manual_value / 10.0,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fisheye: could not set manual exposure: %s", e)
 
     def start(self) -> bool:
         self._thread = threading.Thread(
@@ -205,6 +237,9 @@ class FisheyeCamera:
             return
         logger.info("fisheye: %s opened at %dx%d@%dfps MJPG",
                     self.device_path, self.width, self.height, self.fps)
+        # OpenCV resets V4L2 controls on open, so apply exposure config
+        # here — before we start pulling frames.
+        self._configure_manual_exposure()
         self._started_ok.set()
 
         # Auto-detect the visible image circle once we have a real frame.
