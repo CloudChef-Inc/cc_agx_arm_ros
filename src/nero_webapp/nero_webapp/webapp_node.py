@@ -5,16 +5,23 @@ Architecture
 - Main thread runs uvicorn (FastAPI HTTP + WebSocket).
 - rclpy spins on a background daemon thread.
 - Browser <-> node: one WebSocket at /ws
-    Browser -> node : {"side": "left"|"right", "positions": [7 floats]}
+    Browser -> node : {"side": "left"|"right", "positions": [8 floats — 7 arm + gripper]}
     Node    -> browser (20 Hz):
                        {"type": "state", "data": {
                            "left":  {"names": [...], "positions": [...]},
                            "right": {"names": [...], "positions": [...]}
                        }}
 
-Topic wiring (matches agilexrobotics/agx_arm_ros > agx_arm_ctrl single-arm driver)
-- Command : /<side>/control/joint_states      (sensor_msgs/JointState)
-- Feedback: /<side>/feedback/joint_states     (sensor_msgs/JointState)
+Arm vs gripper split
+--------------------
+Arm joints (joint1..joint7) go out as sensor_msgs/JointState on
+/<side>/control/joint_states, handled by agilexrobotics' agx_arm_ctrl.
+
+The "gripper" slider drives an AgileX Pika — which is USB-serial
+(/dev/ttyACM*), NOT on the arm's CAN bus. We drive it directly via
+pika_sdk from this node. Per-side device paths come from parameters
+`left_pika_serial` / `right_pika_serial`; empty string disables that
+side's gripper cleanly (webapp still runs arm-only).
 
 Server-side safety: commanded positions are clamped to the Nero URDF
 joint limits from nero_description.urdf before being published.
@@ -29,6 +36,12 @@ from typing import Dict, List, Set
 
 from ament_index_python.packages import get_package_share_directory
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+
+# pika_sdk is optional — absence just means gripper control is unavailable.
+try:
+    from pika.gripper import Gripper as PikaGripper  # type: ignore
+except Exception:  # noqa: BLE001
+    PikaGripper = None  # type: ignore
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import rclpy
@@ -66,6 +79,9 @@ class WebappNode(Node):
         self.declare_parameter("right_ns", "right")
         self.declare_parameter("http_host", "0.0.0.0")
         self.declare_parameter("http_port", 8080)
+        # Per-side Pika USB-serial device (e.g. /dev/ttyACM0). Empty = disabled.
+        self.declare_parameter("left_pika_serial",  "")
+        self.declare_parameter("right_pika_serial", "")
 
         self.joint_names: List[str] = (
             self.get_parameter("joint_names").get_parameter_value().string_array_value
@@ -102,11 +118,47 @@ class WebappNode(Node):
         }
         self._latest_lock = threading.Lock()
 
+        # ---- Pika grippers (USB-serial, per side, optional) ----------------
+        self._pika: Dict[str, object] = {"left": None, "right": None}
+        self._pika_lock = threading.Lock()
+        self._init_pika(
+            "left",
+            self.get_parameter("left_pika_serial").get_parameter_value().string_value,
+        )
+        self._init_pika(
+            "right",
+            self.get_parameter("right_pika_serial").get_parameter_value().string_value,
+        )
+
         self.get_logger().info(
             f"nero_webapp: publish /{left_ns}/control/joint_states "
             f"and /{right_ns}/control/joint_states; "
             f"subscribe /{left_ns}/feedback/joint_states and /{right_ns}/feedback/joint_states"
         )
+
+    # ---- Pika gripper (USB-serial) -------------------------------------
+    def _init_pika(self, side: str, serial_path: str) -> None:
+        if not serial_path:
+            return
+        if PikaGripper is None:
+            self.get_logger().warn(
+                f"{side} Pika serial set to {serial_path} but pika_sdk isn't installed; "
+                "install with `pip install git+https://github.com/agilexrobotics/pika_sdk.git` "
+                "to enable gripper control"
+            )
+            return
+        try:
+            g = PikaGripper(serial_path)
+            if not g.connect():
+                self.get_logger().error(f"{side} Pika: failed to connect on {serial_path}")
+                return
+            if not g.enable():
+                self.get_logger().error(f"{side} Pika: connected but enable() failed")
+                return
+            self._pika[side] = g
+            self.get_logger().info(f"{side} Pika connected on {serial_path}")
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"{side} Pika init error: {e}")
 
     # ---- feedback cache ------------------------------------------------
     def _on_state(self, side: str, msg: JointState) -> None:
@@ -133,7 +185,27 @@ class WebappNode(Node):
 
     def snapshot(self) -> Dict[str, Dict]:
         with self._latest_lock:
-            return {k: dict(v) for k, v in self._latest.items()}
+            snap = {k: dict(v) for k, v in self._latest.items()}
+        # Overlay live Pika gripper width onto each side if connected.
+        for side in ("left", "right"):
+            g = self._pika.get(side)
+            if g is None:
+                continue
+            try:
+                with self._pika_lock:
+                    dist_mm = g.get_gripper_distance()
+                width_m = float(dist_mm) / 1000.0
+            except Exception:
+                continue
+            names = list(snap[side].get("names", []))
+            positions = list(snap[side].get("positions", []))
+            if "gripper" in names:
+                positions[names.index("gripper")] = width_m
+            else:
+                names.append("gripper")
+                positions.append(width_m)
+            snap[side] = {"names": names, "positions": positions}
+        return snap
 
     # ---- command path --------------------------------------------------
     def command(self, side: str, positions: List[float]) -> None:
@@ -149,10 +221,22 @@ class WebappNode(Node):
             for p, (lo, hi) in zip(positions, JOINT_LIMITS)
         ]
 
+        # Arm joints (everything except "gripper") go out over ROS; the
+        # Pika gripper is USB-serial and handled separately below.
+        arm_names: List[str] = []
+        arm_positions: List[float] = []
+        gripper_width: float | None = None
+        for name, value in zip(self.joint_names, clamped):
+            if name == "gripper":
+                gripper_width = value
+            else:
+                arm_names.append(name)
+                arm_positions.append(value)
+
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.name = list(self.joint_names)
-        msg.position = clamped
+        msg.name = arm_names
+        msg.position = arm_positions
 
         if side == "left":
             self.pub_left.publish(msg)
@@ -160,6 +244,18 @@ class WebappNode(Node):
             self.pub_right.publish(msg)
         else:
             self.get_logger().warn(f"unknown side: {side}")
+            return
+
+        # Pika takes millimeters, range 0–100 mm. URDF limit is 0–0.1 m.
+        if gripper_width is not None:
+            g = self._pika.get(side)
+            if g is not None:
+                dist_mm = max(0.0, min(100.0, gripper_width * 1000.0))
+                try:
+                    with self._pika_lock:
+                        g.set_gripper_distance(dist_mm)
+                except Exception as e:  # noqa: BLE001
+                    self.get_logger().warn(f"{side} Pika set_gripper_distance failed: {e}")
 
 
 # ---- FastAPI app -----------------------------------------------------

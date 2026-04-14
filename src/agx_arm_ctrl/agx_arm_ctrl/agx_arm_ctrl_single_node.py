@@ -199,18 +199,6 @@ class AgxArmRosNode(Node):
             self.gripper = AgxGripperWrapper(self.agx_arm)
             if self.gripper.initialize():
                 self.get_logger().info("AgxGripper initialized successfully")
-                # Pika powers up with driver_enable_status=False; move
-                # commands are silently ignored until reset_gripper() flips
-                # it to True. Calibrate alone isn't enough — that only sets
-                # the zero point. Do reset on startup when auto_enable is set.
-                if self.auto_enable:
-                    if self.gripper.reset():
-                        self.get_logger().info("AgxGripper reset/enabled")
-                    else:
-                        self.get_logger().warn(
-                            "AgxGripper reset() returned False; "
-                            "move commands may be ignored"
-                        )
             else:
                 self.get_logger().error("Failed to initialize AgxGripper")
                 self.gripper = None

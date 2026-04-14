@@ -38,6 +38,16 @@ def generate_launch_description() -> LaunchDescription:
         "http_host", default_value="0.0.0.0",
         description="HTTP bind address for the nero_webapp UI.",
     )
+    # Pika grippers are USB-serial (/dev/ttyACM*), not on the arm's CAN bus.
+    # Leave empty to disable that side's gripper cleanly.
+    left_pika_serial_arg = DeclareLaunchArgument(
+        "left_pika_serial", default_value="",
+        description="USB-serial device path for the left Pika gripper (empty to disable).",
+    )
+    right_pika_serial_arg = DeclareLaunchArgument(
+        "right_pika_serial", default_value="",
+        description="USB-serial device path for the right Pika gripper (empty to disable).",
+    )
 
     # Composed two-arm URDF via xacro.
     xacro_file = PathJoinSubstitution([
@@ -93,6 +103,8 @@ def generate_launch_description() -> LaunchDescription:
             "right_ns":  "right",
             "http_host": LaunchConfiguration("http_host"),
             "http_port": LaunchConfiguration("http_port"),
+            "left_pika_serial":  LaunchConfiguration("left_pika_serial"),
+            "right_pika_serial": LaunchConfiguration("right_pika_serial"),
         }],
     )
 
@@ -101,6 +113,8 @@ def generate_launch_description() -> LaunchDescription:
         right_can_arg,
         http_port_arg,
         http_host_arg,
+        left_pika_serial_arg,
+        right_pika_serial_arg,
         rsp_node,
         left_arm,
         right_arm,
