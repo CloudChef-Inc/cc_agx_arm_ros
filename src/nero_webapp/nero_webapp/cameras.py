@@ -23,6 +23,44 @@ import numpy as np
 logger = logging.getLogger("nero_webapp.cameras")
 
 
+def _auto_crop_rect(frame: np.ndarray, threshold: int = 16
+                    ) -> Optional[Tuple[int, int, int, int]]:
+    """Return (x0, y0, x1, y1) of the tightest square around the visible
+    (non-black) image content, or None if detection failed.
+
+    For a fisheye camera the visible image is a circle inscribed in the
+    sensor with dark vignetting around it. We threshold at a low value
+    and take the bounding box of the bright region, then grow it to a
+    square centered on the bbox so the crop stays symmetric.
+    """
+    if frame.ndim == 3:
+        gray = frame.max(axis=2)
+    else:
+        gray = frame
+    mask = gray > threshold
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    if not rows.any() or not cols.any():
+        return None
+    y_idx = np.where(rows)[0]
+    x_idx = np.where(cols)[0]
+    y0, y1 = int(y_idx[0]), int(y_idx[-1])
+    x0, x1 = int(x_idx[0]), int(x_idx[-1])
+    # Reject bogus detections (entire sensor is bright → no vignette).
+    h, w = frame.shape[:2]
+    if (y1 - y0 + 1) >= int(h * 0.98) and (x1 - x0 + 1) >= int(w * 0.98):
+        return None
+    size = max(x1 - x0, y1 - y0)
+    cx = (x0 + x1) // 2
+    cy = (y0 + y1) // 2
+    half = size // 2
+    xs = max(0, cx - half)
+    ys = max(0, cy - half)
+    xe = min(w, xs + size)
+    ye = min(h, ys + size)
+    return xs, ys, xe, ye
+
+
 def _stamp(frame: np.ndarray, label: str) -> np.ndarray:
     """Burn a timestamp overlay into the frame (top-left corner).
 
@@ -116,12 +154,14 @@ class FisheyeCamera:
     """
 
     def __init__(self, device_path: str, width: int, height: int,
-                 fps: int, overlay_label: str = "fisheye") -> None:
+                 fps: int, overlay_label: str = "fisheye",
+                 auto_circle_crop: bool = True) -> None:
         self.device_path = device_path
         self.width = width
         self.height = height
         self.fps = fps
         self.overlay_label = overlay_label
+        self.auto_circle_crop = auto_circle_crop
         self.frames = LatestFrame()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -158,12 +198,30 @@ class FisheyeCamera:
         logger.info("fisheye: %s opened at %dx%d@%dfps MJPG",
                     self.device_path, self.width, self.height, self.fps)
         self._started_ok.set()
+
+        # Auto-detect the visible image circle once we have a real frame.
+        # crop_rect is (x0, y0, x1, y1) or None (= no crop).
+        crop_rect: Optional[Tuple[int, int, int, int]] = None
+        detection_attempts = 0
         try:
             while not self._stop.is_set():
                 ok, frame = cap.read()
                 if not ok:
                     time.sleep(0.005)
                     continue
+                if self.auto_circle_crop and crop_rect is None and detection_attempts < 5:
+                    detection_attempts += 1
+                    rect = _auto_crop_rect(frame)
+                    if rect is not None:
+                        crop_rect = rect
+                        x0, y0, x1, y1 = rect
+                        logger.info(
+                            "fisheye: auto circle-crop %dx%d → %dx%d at (%d,%d)-(%d,%d)",
+                            self.width, self.height, x1 - x0, y1 - y0, x0, y0, x1, y1,
+                        )
+                if crop_rect is not None:
+                    x0, y0, x1, y1 = crop_rect
+                    frame = frame[y0:y1, x0:x1]
                 frame = _stamp(frame, self.overlay_label)
                 self.frames.put(frame)
         finally:

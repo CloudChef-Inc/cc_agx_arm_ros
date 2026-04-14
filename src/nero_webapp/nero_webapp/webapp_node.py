@@ -90,9 +90,13 @@ class WebappNode(Node):
         # parameter. The three feeds are: the Pika's fisheye webcam, and the
         # RealSense D405's color + colorized depth streams.
         self.declare_parameter("fisheye_device", "")
-        self.declare_parameter("fisheye_width",  1920)
-        self.declare_parameter("fisheye_height", 1200)
+        self.declare_parameter("fisheye_width",  1280)
+        self.declare_parameter("fisheye_height", 720)
         self.declare_parameter("fisheye_fps",    30)
+        # Auto-detect the visible image circle and crop to it — removes
+        # the black vignette, saves encode bandwidth, and makes the tile
+        # fill more useful area with content pixels.
+        self.declare_parameter("fisheye_circle_crop", True)
         self.declare_parameter("realsense_serial",  "")
         self.declare_parameter("realsense_enable",  True)
         self.declare_parameter("realsense_color_w", 1280)
@@ -167,6 +171,7 @@ class WebappNode(Node):
                 width=self.get_parameter("fisheye_width").get_parameter_value().integer_value,
                 height=self.get_parameter("fisheye_height").get_parameter_value().integer_value,
                 fps=self.get_parameter("fisheye_fps").get_parameter_value().integer_value,
+                auto_circle_crop=self.get_parameter("fisheye_circle_crop").get_parameter_value().bool_value,
             )
             if cam.start():
                 self.fisheye = cam
