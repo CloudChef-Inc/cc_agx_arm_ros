@@ -87,7 +87,11 @@ def setup_webrtc_routes(
         body = await request.json()
         if "sdp" not in body or "type" not in body:
             raise HTTPException(400, "missing sdp/type")
-        remote = RTCSessionDescription(sdp=body["sdp"], type=body["type"])
+        sdp = body["sdp"]
+        sdp_type = body["type"]
+        if not isinstance(sdp, str) or not sdp.strip() or sdp_type != "offer":
+            raise HTTPException(400, "sdp must be a non-empty offer")
+        remote = RTCSessionDescription(sdp=sdp, type=sdp_type)
 
         pc = RTCPeerConnection()
         pcs.add(pc)

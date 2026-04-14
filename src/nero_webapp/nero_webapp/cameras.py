@@ -12,6 +12,7 @@ before publishing.
 """
 from __future__ import annotations
 
+import collections
 import logging
 import threading
 import time
@@ -20,6 +21,33 @@ from typing import Optional, Tuple
 import numpy as np
 
 logger = logging.getLogger("nero_webapp.cameras")
+
+
+def _stamp(frame: np.ndarray, label: str) -> np.ndarray:
+    """Burn a timestamp overlay into the frame (top-left corner).
+
+    Used for visual latency checks — compare the displayed stamp to the
+    browser's matching wall clock. Skip the overlay by passing label="".
+    """
+    if not label:
+        return frame
+    # OpenCV is imported lazily so the package doesn't fail to import
+    # on systems that only use RealSense / no fisheye (etc).
+    import cv2
+    if not frame.flags.writeable:
+        frame = frame.copy()
+    t = time.time()
+    text = (
+        f"{label} "
+        f"{time.strftime('%H:%M:%S', time.localtime(t))}."
+        f"{int((t % 1) * 1000):03d}"
+    )
+    pos = (8, 26)
+    cv2.putText(frame, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(frame, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                (255, 255, 255), 1, cv2.LINE_AA)
+    return frame
 
 
 class LatestFrame:
@@ -35,12 +63,29 @@ class LatestFrame:
         self._frame: Optional[np.ndarray] = None
         self._seq = 0
         self._closed = False
+        # Rolling window of put() timestamps — used to report capture fps.
+        self._put_times: collections.deque = collections.deque(maxlen=120)
 
     def put(self, frame: np.ndarray) -> None:
         with self._cv:
             self._frame = frame
             self._seq += 1
+            self._put_times.append(time.monotonic())
             self._cv.notify_all()
+
+    def fps(self) -> float:
+        with self._cv:
+            if len(self._put_times) < 2:
+                return 0.0
+            dt = self._put_times[-1] - self._put_times[0]
+            if dt <= 0:
+                return 0.0
+            return (len(self._put_times) - 1) / dt
+
+    def info(self) -> dict:
+        with self._cv:
+            shape = list(self._frame.shape) if self._frame is not None else None
+            return {"seq": self._seq, "fps": round(self.fps(), 2), "shape": shape}
 
     def close(self) -> None:
         with self._cv:
@@ -71,11 +116,12 @@ class FisheyeCamera:
     """
 
     def __init__(self, device_path: str, width: int, height: int,
-                 fps: int) -> None:
+                 fps: int, overlay_label: str = "fisheye") -> None:
         self.device_path = device_path
         self.width = width
         self.height = height
         self.fps = fps
+        self.overlay_label = overlay_label
         self.frames = LatestFrame()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -118,6 +164,7 @@ class FisheyeCamera:
                 if not ok:
                     time.sleep(0.005)
                     continue
+                frame = _stamp(frame, self.overlay_label)
                 self.frames.put(frame)
         finally:
             cap.release()
@@ -134,13 +181,16 @@ class RealSenseCamera:
     """
 
     def __init__(self, serial: str, color_w: int, color_h: int,
-                 depth_w: int, depth_h: int, fps: int) -> None:
+                 depth_w: int, depth_h: int, fps: int,
+                 color_label: str = "color", depth_label: str = "depth") -> None:
         self.serial = serial
         self.color_w = color_w
         self.color_h = color_h
         self.depth_w = depth_w
         self.depth_h = depth_h
         self.fps = fps
+        self.color_label = color_label
+        self.depth_label = depth_label
         self.color = LatestFrame()
         self.depth = LatestFrame()
         self._thread: Optional[threading.Thread] = None
@@ -201,6 +251,9 @@ class RealSenseCamera:
                 depth = frames.get_depth_frame()
                 if color:
                     arr = np.asanyarray(color.get_data())
+                    # RealSense frames are read-only views; copy for overlay.
+                    arr = arr.copy()
+                    arr = _stamp(arr, self.color_label)
                     self.color.put(arr)
                 if depth:
                     colorized = colorizer.colorize(depth)
@@ -208,6 +261,7 @@ class RealSenseCamera:
                     # Colorizer emits RGB; swap to BGR and force a
                     # contiguous copy so PyAV doesn't choke on the stride.
                     bgr = np.ascontiguousarray(rgb[:, :, ::-1])
+                    bgr = _stamp(bgr, self.depth_label)
                     self.depth.put(bgr)
         finally:
             pipeline.stop()

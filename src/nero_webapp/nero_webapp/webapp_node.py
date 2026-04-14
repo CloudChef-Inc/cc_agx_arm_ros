@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -362,6 +363,18 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
     @app.get("/joint_limits")
     async def joint_limits() -> Dict:
         return {"names": node.joint_names, "limits": JOINT_LIMITS}
+
+    @app.get("/stats")
+    async def stats() -> Dict:
+        """Per-camera capture stats (fps, last-frame shape).
+
+        Client-side fetches this once a second and pairs it with
+        RTCPeerConnection.getStats() for a full end-to-end picture.
+        """
+        out: Dict[str, Dict] = {}
+        for name, slot in node.camera_slots():
+            out[name] = slot.info()
+        return {"server_time": time.time(), "cameras": out}
 
     clients: Set[WebSocket] = set()
 

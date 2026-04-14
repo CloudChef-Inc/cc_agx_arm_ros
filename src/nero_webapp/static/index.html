@@ -19,6 +19,7 @@
   <header>
     <h1>Nero dual-arm</h1>
     <span id="status" class="status disconnected">disconnected</span>
+    <span class="clock" id="wallclock" title="Browser wall clock — compare to the overlay burned into each camera frame to eyeball end-to-end latency">–:–:–.–</span>
   </header>
 
   <main>
@@ -51,14 +52,17 @@
     <div class="camera" data-cam="fisheye">
       <h3>Fisheye <span class="cam-status" id="cam-status-fisheye">–</span></h3>
       <video id="video-fisheye" autoplay muted playsinline></video>
+      <div class="cam-stats" id="cam-stats-fisheye"></div>
     </div>
     <div class="camera" data-cam="color">
       <h3>RealSense color <span class="cam-status" id="cam-status-color">–</span></h3>
       <video id="video-color" autoplay muted playsinline></video>
+      <div class="cam-stats" id="cam-stats-color"></div>
     </div>
     <div class="camera" data-cam="depth">
       <h3>RealSense depth <span class="cam-status" id="cam-status-depth">–</span></h3>
       <video id="video-depth" autoplay muted playsinline></video>
+      <div class="cam-stats" id="cam-stats-depth"></div>
     </div>
   </footer>
 

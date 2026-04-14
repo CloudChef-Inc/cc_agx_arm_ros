@@ -380,12 +380,19 @@ function setCamStatus(name, text, cls) {
   el.className = "cam-status " + (cls || "");
 }
 
+// Latest RTCPeerConnection (kept module-scope so the stats poller can
+// call getStats() without re-negotiating).
+let cameraPc = null;
+// Track which remote track belongs to which camera name, keyed by trackId.
+const trackIdToCamera = new Map();
+
 async function startCameras() {
   for (const n of CAM_ORDER) setCamStatus(n, "negotiating", "pending");
 
   const pc = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   });
+  cameraPc = pc;
 
   // One recvonly video transceiver per possible camera — server trims
   // unused ones in the answer.
@@ -448,11 +455,103 @@ async function startCameras() {
     }
     const stream = new MediaStream([track]);
     videoEl.srcObject = stream;
+    trackIdToCamera.set(track.id, name);
     videoEl.addEventListener(
       "playing",
       () => setCamStatus(name, "live", "live"),
       { once: true },
     );
+  }
+
+  // Start the stats poller once the PC is built.
+  if (!window.__camStatsPollerStarted) {
+    window.__camStatsPollerStarted = true;
+    pollCameraStats();
+  }
+}
+
+// ---- wall clock (for visual latency compare against frame overlay) -----
+function formatClock(ms) {
+  const d = new Date(ms);
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  return (
+    pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()) +
+    "." + pad(d.getMilliseconds(), 3)
+  );
+}
+function tickClock() {
+  const el = document.getElementById("wallclock");
+  if (el) el.textContent = formatClock(Date.now());
+  requestAnimationFrame(tickClock);
+}
+tickClock();
+
+// ---- per-camera stats polling -----------------------------------------
+// Every second, fetch /stats for capture-side numbers and pc.getStats()
+// for decode/receive-side numbers, then update each camera's stats line.
+const prevInbound = new Map();  // trackName -> {bytes, frames, t}
+
+async function pollCameraStats() {
+  while (true) {
+    await new Promise((r) => setTimeout(r, 1000));
+    let serverStats = null;
+    try {
+      const resp = await fetch("/stats", { cache: "no-store" });
+      serverStats = await resp.json();
+    } catch (_) {}
+
+    const peerStats = cameraPc ? await cameraPc.getStats() : null;
+    const perCam = new Map();
+    if (peerStats) {
+      peerStats.forEach((rep) => {
+        if (rep.type !== "inbound-rtp" || rep.kind !== "video") return;
+        const name = trackIdToCamera.get(rep.trackIdentifier) ||
+                     trackIdToCamera.get(rep.trackId);
+        if (!name) return;
+        perCam.set(name, rep);
+      });
+    }
+
+    for (const name of CAM_ORDER) {
+      const el = document.getElementById("cam-stats-" + name);
+      if (!el) continue;
+      const srv = serverStats && serverStats.cameras &&
+                  serverStats.cameras[name];
+      const rep = perCam.get(name);
+      let line = "";
+      if (srv && srv.shape) {
+        const [h, w] = srv.shape;
+        line += `cap ${srv.fps.toFixed(1)} fps ${w}x${h}`;
+      } else {
+        line += "cap –";
+      }
+      if (rep) {
+        const now = performance.now();
+        const prev = prevInbound.get(name);
+        prevInbound.set(name, {
+          bytes: rep.bytesReceived || 0,
+          frames: rep.framesDecoded || 0,
+          t: now,
+        });
+        let fps = 0, kbps = 0;
+        if (prev) {
+          const dt = (now - prev.t) / 1000;
+          if (dt > 0) {
+            fps = ((rep.framesDecoded || 0) - prev.frames) / dt;
+            kbps = ((rep.bytesReceived || 0) - prev.bytes) * 8 / 1000 / dt;
+          }
+        }
+        const dropped = rep.framesDropped || 0;
+        const lost = rep.packetsLost || 0;
+        const jitterMs = Math.round((rep.jitter || 0) * 1000);
+        line += ` · rx ${fps.toFixed(1)} fps ${kbps.toFixed(0)} kbps` +
+                ` · drop ${dropped} · lost ${lost} · jit ${jitterMs}ms`;
+        el.classList.toggle("warn", lost > 5 || dropped > 10);
+      } else {
+        line += " · rx –";
+      }
+      el.textContent = line;
+    }
   }
 }
 
