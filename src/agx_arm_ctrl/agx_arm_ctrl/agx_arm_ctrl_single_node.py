@@ -199,6 +199,18 @@ class AgxArmRosNode(Node):
             self.gripper = AgxGripperWrapper(self.agx_arm)
             if self.gripper.initialize():
                 self.get_logger().info("AgxGripper initialized successfully")
+                # Pika gripper ships un-homed; move commands are silently
+                # rejected (driver_enable_status=False) until homing runs.
+                # Auto-calibrate on startup when auto_enable is set, so the
+                # webapp slider works without a separate manual step.
+                if self.auto_enable:
+                    if self.gripper.calibrate(timeout=5.0):
+                        self.get_logger().info("AgxGripper calibrated (homing complete)")
+                    else:
+                        self.get_logger().warn(
+                            "AgxGripper calibrate() returned False; "
+                            "move commands may be ignored until homed"
+                        )
             else:
                 self.get_logger().error("Failed to initialize AgxGripper")
                 self.gripper = None
