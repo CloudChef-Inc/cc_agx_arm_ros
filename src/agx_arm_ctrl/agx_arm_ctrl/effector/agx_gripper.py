@@ -178,6 +178,17 @@ class AgxGripperWrapper:
             return False
         
         return self._effector.disable_gripper()
+
+    def reset(self) -> bool:
+        """Reset/enable the gripper (clears errors, sets driver_enable_status=True).
+
+        The Pika gripper powers up with driver_enable_status=False and
+        silently ignores move commands. reset_gripper() sends status_code=2
+        (width mode) which flips driver_enable_status to True.
+        """
+        if not self._initialized or self._effector is None:
+            return False
+        return self._effector.reset_gripper()
     
     def calibrate(self, timeout: float = 1.0) -> bool:
         if not self._initialized or self._effector is None:
