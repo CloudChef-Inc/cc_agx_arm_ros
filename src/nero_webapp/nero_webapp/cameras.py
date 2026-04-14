@@ -230,8 +230,14 @@ class FisheyeCamera:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         cap.set(cv2.CAP_PROP_FPS,          self.fps)
-        # Shrink kernel-side buffer so reads stay on the live frame.
-        cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+        # Buffer count of 2 is the minimum for V4L2 USB ping-pong:
+        # camera DMAs into one while userspace drains the other. Setting
+        # BUFFERSIZE=1 here (a common "keep latency low" instinct) is
+        # catastrophic — the kernel drops every other frame because
+        # there's no free buffer for the next isochronous packet while
+        # we hold the one. Our dedicated reader thread keeps the queue
+        # depth at 1 effectively anyway, so latency stays tight.
+        cap.set(cv2.CAP_PROP_BUFFERSIZE,   2)
         if not cap.isOpened():
             logger.error("fisheye: failed to open %s", self.device_path)
             return

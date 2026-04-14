@@ -92,10 +92,7 @@ class WebappNode(Node):
         self.declare_parameter("fisheye_device", "")
         self.declare_parameter("fisheye_width",  1280)
         self.declare_parameter("fisheye_height", 720)
-        # Known quirk: OpenCV's CAP_PROP_FPS on this UVC driver consistently
-        # halves the requested rate (ask 60 → get 30, ask 30 → get 15).
-        # We request 2× our target to end up with ~30fps in practice.
-        self.declare_parameter("fisheye_fps",    60)
+        self.declare_parameter("fisheye_fps",    30)
         # Auto-detect the visible image circle and crop to it — removes
         # the black vignette, saves encode bandwidth, and makes the tile
         # fill more useful area with content pixels.
