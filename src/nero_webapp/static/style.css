@@ -177,3 +177,63 @@ button.btn-send:hover { filter: brightness(1.1); color: #07090c; }
     border-top: 1px solid var(--border);
   }
 }
+
+/* --- camera strip (WebRTC live feeds) --------------------------------- */
+footer.cameras {
+  flex: 0 0 auto;
+  height: 260px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  padding: 6px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+.camera {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.camera h3 {
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+}
+
+.camera h3 .cam-status {
+  color: var(--muted);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.camera h3 .cam-status.live     { color: var(--ok); }
+.camera h3 .cam-status.failed   { color: var(--bad); }
+.camera h3 .cam-status.pending  { color: var(--accent); }
+
+.camera video {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+@media (max-height: 720px) {
+  footer.cameras { height: 200px; }
+}

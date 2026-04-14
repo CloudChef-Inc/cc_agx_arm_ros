@@ -50,6 +50,9 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 import uvicorn
 
+from .cameras import FisheyeCamera, RealSenseCamera
+from .webrtc import setup_webrtc_routes
+
 
 # Default Nero joint names (7 revolute + gripper). Match nero_description.urdf.
 DEFAULT_JOINT_NAMES: List[str] = [
@@ -82,6 +85,20 @@ class WebappNode(Node):
         # Per-side Pika USB-serial device (e.g. /dev/ttyACM0). Empty = disabled.
         self.declare_parameter("left_pika_serial",  "")
         self.declare_parameter("right_pika_serial", "")
+        # Cameras. Each can be disabled independently by emptying its device
+        # parameter. The three feeds are: the Pika's fisheye webcam, and the
+        # RealSense D405's color + colorized depth streams.
+        self.declare_parameter("fisheye_device", "")
+        self.declare_parameter("fisheye_width",  1280)
+        self.declare_parameter("fisheye_height", 720)
+        self.declare_parameter("fisheye_fps",    60)
+        self.declare_parameter("realsense_serial",  "")
+        self.declare_parameter("realsense_enable",  True)
+        self.declare_parameter("realsense_color_w", 1280)
+        self.declare_parameter("realsense_color_h", 720)
+        self.declare_parameter("realsense_depth_w", 1280)
+        self.declare_parameter("realsense_depth_h", 720)
+        self.declare_parameter("realsense_fps",     30)
 
         self.joint_names: List[str] = (
             self.get_parameter("joint_names").get_parameter_value().string_array_value
@@ -130,11 +147,67 @@ class WebappNode(Node):
             self.get_parameter("right_pika_serial").get_parameter_value().string_value,
         )
 
+        # Camera workers — constructed here, started explicitly in start_cameras().
+        self.fisheye: "FisheyeCamera | None" = None
+        self.realsense: "RealSenseCamera | None" = None
+
         self.get_logger().info(
             f"nero_webapp: publish /{left_ns}/control/joint_states "
             f"and /{right_ns}/control/joint_states; "
             f"subscribe /{left_ns}/feedback/joint_states and /{right_ns}/feedback/joint_states"
         )
+
+    # ---- cameras (V4L2 fisheye + RealSense) ----------------------------
+    def start_cameras(self) -> None:
+        fish_dev = self.get_parameter("fisheye_device").get_parameter_value().string_value
+        if fish_dev:
+            cam = FisheyeCamera(
+                device_path=fish_dev,
+                width=self.get_parameter("fisheye_width").get_parameter_value().integer_value,
+                height=self.get_parameter("fisheye_height").get_parameter_value().integer_value,
+                fps=self.get_parameter("fisheye_fps").get_parameter_value().integer_value,
+            )
+            if cam.start():
+                self.fisheye = cam
+            else:
+                self.get_logger().error(f"fisheye: failed to open {fish_dev}; disabling")
+                cam.stop()
+
+        if self.get_parameter("realsense_enable").get_parameter_value().bool_value:
+            rs_cam = RealSenseCamera(
+                serial=self.get_parameter("realsense_serial").get_parameter_value().string_value,
+                color_w=self.get_parameter("realsense_color_w").get_parameter_value().integer_value,
+                color_h=self.get_parameter("realsense_color_h").get_parameter_value().integer_value,
+                depth_w=self.get_parameter("realsense_depth_w").get_parameter_value().integer_value,
+                depth_h=self.get_parameter("realsense_depth_h").get_parameter_value().integer_value,
+                fps=self.get_parameter("realsense_fps").get_parameter_value().integer_value,
+            )
+            if rs_cam.start():
+                self.realsense = rs_cam
+            else:
+                self.get_logger().error("realsense: pipeline failed to start; disabling")
+                rs_cam.stop()
+
+    def stop_cameras(self) -> None:
+        if self.fisheye is not None:
+            self.fisheye.stop()
+            self.fisheye = None
+        if self.realsense is not None:
+            self.realsense.stop()
+            self.realsense = None
+
+    def camera_slots(self) -> list:
+        """Ordered (name, LatestFrame) list for WebRTC track publishing.
+
+        Order matters: browser pairs it with pc.getTransceivers() order.
+        """
+        slots = []
+        if self.fisheye is not None:
+            slots.append(("fisheye", self.fisheye.frames))
+        if self.realsense is not None:
+            slots.append(("color", self.realsense.color))
+            slots.append(("depth", self.realsense.depth))
+        return slots
 
     # ---- Pika gripper (USB-serial) -------------------------------------
     def _init_pika(self, side: str, serial_path: str) -> None:
@@ -331,6 +404,12 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
     async def _start_broadcaster() -> None:
         asyncio.create_task(broadcaster())
 
+    # WebRTC /offer endpoint for live camera streams. Only mounted when
+    # at least one camera was started successfully.
+    slots = node.camera_slots()
+    if slots:
+        setup_webrtc_routes(app, slots)
+
     return app
 
 
@@ -341,6 +420,10 @@ def main() -> None:
     spin_thread = threading.Thread(target=lambda: rclpy.spin(node), daemon=True)
     spin_thread.start()
 
+    # Start camera threads BEFORE build_app so camera_slots() reflects
+    # which cameras actually opened successfully.
+    node.start_cameras()
+
     static_dir = Path(get_package_share_directory("nero_webapp")) / "static"
     host = node.get_parameter("http_host").get_parameter_value().string_value
     port = node.get_parameter("http_port").get_parameter_value().integer_value
@@ -350,6 +433,7 @@ def main() -> None:
     try:
         uvicorn.run(app, host=host, port=port, log_level="info")
     finally:
+        node.stop_cameras()
         rclpy.shutdown()
         spin_thread.join(timeout=1.0)
 

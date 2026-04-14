@@ -365,6 +365,97 @@ function connect() {
   });
 }
 
+// ------------ WebRTC camera streams -------------------------------------
+// Server publishes up to three video tracks per peer connection in this
+// fixed order: fisheye, color, depth. We create one recvonly transceiver
+// per expected track, send an SDP offer to /offer, and pair each incoming
+// track with its <video> element by the server-returned "cameras" list.
+
+const CAM_ORDER = ["fisheye", "color", "depth"];
+
+function setCamStatus(name, text, cls) {
+  const el = document.getElementById("cam-status-" + name);
+  if (!el) return;
+  el.textContent = text;
+  el.className = "cam-status " + (cls || "");
+}
+
+async function startCameras() {
+  for (const n of CAM_ORDER) setCamStatus(n, "negotiating", "pending");
+
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  });
+
+  // One recvonly video transceiver per possible camera — server trims
+  // unused ones in the answer.
+  const transceivers = CAM_ORDER.map(() =>
+    pc.addTransceiver("video", { direction: "recvonly" })
+  );
+
+  // Collect incoming tracks in arrival order. We pair them with the
+  // server's camera list (returned in the answer) below.
+  const incomingTracks = [];
+  pc.addEventListener("track", (ev) => {
+    incomingTracks.push(ev.track);
+  });
+
+  pc.addEventListener("connectionstatechange", () => {
+    if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+      for (const n of CAM_ORDER) setCamStatus(n, pc.connectionState, "failed");
+    }
+  });
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  const resp = await fetch("/offer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sdp: pc.localDescription.sdp,
+      type: pc.localDescription.type,
+    }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    console.error("WebRTC /offer failed", resp.status, text);
+    for (const n of CAM_ORDER) setCamStatus(n, "offer failed", "failed");
+    return;
+  }
+  const answer = await resp.json();
+  const serverCameras = answer.cameras || [];
+  await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type });
+
+  // Cameras the server didn't add aren't going to fire a track event.
+  for (const n of CAM_ORDER) {
+    if (!serverCameras.includes(n)) setCamStatus(n, "disabled", "failed");
+  }
+
+  // Wait briefly for all expected tracks to arrive, then pair them in
+  // arrival order with the server's camera name list.
+  const deadline = Date.now() + 5000;
+  while (incomingTracks.length < serverCameras.length && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  for (let i = 0; i < serverCameras.length; i++) {
+    const name = serverCameras[i];
+    const track = incomingTracks[i];
+    const videoEl = document.getElementById("video-" + name);
+    if (!track || !videoEl) {
+      setCamStatus(name, "no track", "failed");
+      continue;
+    }
+    const stream = new MediaStream([track]);
+    videoEl.srcObject = stream;
+    videoEl.addEventListener(
+      "playing",
+      () => setCamStatus(name, "live", "live"),
+      { once: true },
+    );
+  }
+}
+
 // ------------ boot ------------------------------------------------------
 async function boot() {
   const resp = await fetch("/joint_limits");
@@ -381,6 +472,12 @@ async function boot() {
     console.error("URDF load failed", err);
     statusEl.textContent = "URDF load failed (check console)";
   }
+  // WebRTC negotiation is independent of the URDF/WS path; don't let
+  // camera failures break the arm UI.
+  startCameras().catch((err) => {
+    console.error("WebRTC start failed", err);
+    for (const n of CAM_ORDER) setCamStatus(n, "error", "failed");
+  });
 }
 
 boot().catch((err) => {

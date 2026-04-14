@@ -49,6 +49,19 @@ def generate_launch_description() -> LaunchDescription:
         "right_pika_serial", default_value="",
         description="USB-serial device path for the right Pika gripper (empty to disable).",
     )
+    # Cameras (webapp-side, WebRTC-streamed to the browser).
+    fisheye_device_arg = DeclareLaunchArgument(
+        "fisheye_device", default_value="/dev/video6",
+        description="V4L2 path for the Pika fisheye camera (empty to disable).",
+    )
+    realsense_enable_arg = DeclareLaunchArgument(
+        "realsense_enable", default_value="true",
+        description="Whether to open the RealSense D405 (color + depth).",
+    )
+    realsense_serial_arg = DeclareLaunchArgument(
+        "realsense_serial", default_value="",
+        description="RealSense device serial; empty = auto-pick first detected.",
+    )
 
     # Composed two-arm URDF via xacro.
     xacro_file = PathJoinSubstitution([
@@ -109,6 +122,9 @@ def generate_launch_description() -> LaunchDescription:
             "http_port": LaunchConfiguration("http_port"),
             "left_pika_serial":  LaunchConfiguration("left_pika_serial"),
             "right_pika_serial": LaunchConfiguration("right_pika_serial"),
+            "fisheye_device":    LaunchConfiguration("fisheye_device"),
+            "realsense_enable":  LaunchConfiguration("realsense_enable"),
+            "realsense_serial":  LaunchConfiguration("realsense_serial"),
         }],
     )
 
@@ -119,6 +135,9 @@ def generate_launch_description() -> LaunchDescription:
         http_host_arg,
         left_pika_serial_arg,
         right_pika_serial_arg,
+        fisheye_device_arg,
+        realsense_enable_arg,
+        realsense_serial_arg,
         rsp_node,
         left_arm,
         right_arm,

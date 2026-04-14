@@ -47,6 +47,21 @@
     </section>
   </main>
 
+  <footer class="cameras" id="cameras">
+    <div class="camera" data-cam="fisheye">
+      <h3>Fisheye <span class="cam-status" id="cam-status-fisheye">–</span></h3>
+      <video id="video-fisheye" autoplay muted playsinline></video>
+    </div>
+    <div class="camera" data-cam="color">
+      <h3>RealSense color <span class="cam-status" id="cam-status-color">–</span></h3>
+      <video id="video-color" autoplay muted playsinline></video>
+    </div>
+    <div class="camera" data-cam="depth">
+      <h3>RealSense depth <span class="cam-status" id="cam-status-depth">–</span></h3>
+      <video id="video-depth" autoplay muted playsinline></video>
+    </div>
+  </footer>
+
   <script type="module" src="/static/main.js"></script>
 </body>
 </html>
