@@ -4,11 +4,17 @@ Launches:
   * robot_state_publisher with the composed two-arm URDF
   * agx_arm_ctrl single-arm driver pushed into /left namespace
   * agx_arm_ctrl single-arm driver pushed into /right namespace
-  * nero_webapp browser UI node
+  * nero_webapp browser UI node (6 camera streams max — fisheye + color +
+    depth × 2 sides — WebRTC'd to the browser)
 
-Before running: bring both CAN links up, e.g.
-    sudo ip link set can0 up type can bitrate 1000000
-    sudo ip link set can1 up type can bitrate 1000000
+All per-device defaults point at the stable names maintained by the
+udev rules + /usr/local/bin/nero-detect-pika: `can_left`, `can_right`,
+`/dev/pika_{side}`, `/dev/fisheye_{side}`. Re-plug any cable on any hub
+and the launch still works without edits.
+
+Setting any device path to an empty string cleanly disables that
+specific device — useful for bringing up one arm at a time during
+hardware work.
 """
 from pathlib import Path
 
@@ -24,12 +30,12 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description() -> LaunchDescription:
     left_can_arg = DeclareLaunchArgument(
-        "left_can", default_value="can0",
-        description="CAN interface for the left arm.",
+        "left_can", default_value="can_left",
+        description="CAN interface for the left arm (stable udev name).",
     )
     right_can_arg = DeclareLaunchArgument(
-        "right_can", default_value="can1",
-        description="CAN interface for the right arm.",
+        "right_can", default_value="can_right",
+        description="CAN interface for the right arm (stable udev name).",
     )
     http_port_arg = DeclareLaunchArgument(
         "http_port", default_value="8080",
@@ -39,28 +45,39 @@ def generate_launch_description() -> LaunchDescription:
         "http_host", default_value="0.0.0.0",
         description="HTTP bind address for the nero_webapp UI.",
     )
-    # Pika grippers are USB-serial (/dev/ttyACM*), not on the arm's CAN bus.
-    # Leave empty to disable that side's gripper cleanly.
+    # Pika grippers (CH340 USB-serial). Symlinks maintained by
+    # nero-detect-pika. Empty path disables that side's gripper.
     left_pika_serial_arg = DeclareLaunchArgument(
-        "left_pika_serial", default_value="",
-        description="USB-serial device path for the left Pika gripper (empty to disable).",
+        "left_pika_serial", default_value="/dev/pika_left",
+        description="USB-serial device for the left Pika gripper "
+                    "(empty to disable).",
     )
     right_pika_serial_arg = DeclareLaunchArgument(
-        "right_pika_serial", default_value="",
-        description="USB-serial device path for the right Pika gripper (empty to disable).",
+        "right_pika_serial", default_value="/dev/pika_right",
+        description="USB-serial device for the right Pika gripper "
+                    "(empty to disable).",
     )
-    # Cameras (webapp-side, WebRTC-streamed to the browser).
-    fisheye_device_arg = DeclareLaunchArgument(
-        "fisheye_device", default_value="/dev/video6",
-        description="V4L2 path for the Pika fisheye camera (empty to disable).",
+    # Per-side Pika fisheye cameras (UVC). Symlinks maintained by
+    # nero-detect-pika.
+    left_fisheye_device_arg = DeclareLaunchArgument(
+        "left_fisheye_device", default_value="/dev/fisheye_left",
+        description="V4L2 path for the left Pika fisheye (empty to disable).",
     )
-    realsense_enable_arg = DeclareLaunchArgument(
-        "realsense_enable", default_value="true",
-        description="Whether to open the RealSense D405 (color + depth).",
+    right_fisheye_device_arg = DeclareLaunchArgument(
+        "right_fisheye_device", default_value="/dev/fisheye_right",
+        description="V4L2 path for the right Pika fisheye (empty to disable).",
     )
-    realsense_serial_arg = DeclareLaunchArgument(
-        "realsense_serial", default_value="",
-        description="RealSense device serial; empty = auto-pick first detected.",
+    # Per-side RealSense D405 serials. Empty → webapp_node falls back
+    # to /etc/nero/d405_sides.conf, which the detector already manages.
+    left_realsense_serial_arg = DeclareLaunchArgument(
+        "left_realsense_serial", default_value="",
+        description="RealSense D405 serial for the left arm (empty "
+                    "= fall back to /etc/nero/d405_sides.conf).",
+    )
+    right_realsense_serial_arg = DeclareLaunchArgument(
+        "right_realsense_serial", default_value="",
+        description="RealSense D405 serial for the right arm (empty "
+                    "= fall back to /etc/nero/d405_sides.conf).",
     )
 
     # Composed two-arm URDF via xacro.
@@ -83,8 +100,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # Each IncludeLaunchDescription needs its OWN PythonLaunchDescriptionSource —
-    # in Jazzy, sharing a source between includes causes the inner Node entities
-    # to be executed twice, which raises "executed more than once".
+    # in Jazzy, sharing a source between includes raises "executed more than once".
     single_arm_launch_path = PathJoinSubstitution([
         FindPackageShare("agx_arm_ctrl"),
         "launch", "start_single_agx_arm.launch.py",
@@ -120,11 +136,12 @@ def generate_launch_description() -> LaunchDescription:
             "right_ns":  "right",
             "http_host": LaunchConfiguration("http_host"),
             "http_port": LaunchConfiguration("http_port"),
-            "left_pika_serial":  LaunchConfiguration("left_pika_serial"),
-            "right_pika_serial": LaunchConfiguration("right_pika_serial"),
-            "fisheye_device":    LaunchConfiguration("fisheye_device"),
-            "realsense_enable":  LaunchConfiguration("realsense_enable"),
-            "realsense_serial":  LaunchConfiguration("realsense_serial"),
+            "left_pika_serial":       LaunchConfiguration("left_pika_serial"),
+            "right_pika_serial":      LaunchConfiguration("right_pika_serial"),
+            "left_fisheye_device":    LaunchConfiguration("left_fisheye_device"),
+            "right_fisheye_device":   LaunchConfiguration("right_fisheye_device"),
+            "left_realsense_serial":  LaunchConfiguration("left_realsense_serial"),
+            "right_realsense_serial": LaunchConfiguration("right_realsense_serial"),
         }],
     )
 
@@ -135,9 +152,10 @@ def generate_launch_description() -> LaunchDescription:
         http_host_arg,
         left_pika_serial_arg,
         right_pika_serial_arg,
-        fisheye_device_arg,
-        realsense_enable_arg,
-        realsense_serial_arg,
+        left_fisheye_device_arg,
+        right_fisheye_device_arg,
+        left_realsense_serial_arg,
+        right_realsense_serial_arg,
         rsp_node,
         left_arm,
         right_arm,

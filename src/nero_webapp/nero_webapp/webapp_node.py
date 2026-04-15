@@ -86,23 +86,24 @@ class WebappNode(Node):
         # Per-side Pika USB-serial device (e.g. /dev/ttyACM0). Empty = disabled.
         self.declare_parameter("left_pika_serial",  "")
         self.declare_parameter("right_pika_serial", "")
-        # Cameras. Each can be disabled independently by emptying its device
-        # parameter. The three feeds are: the Pika's fisheye webcam, and the
-        # RealSense D405's color + colorized depth streams.
-        self.declare_parameter("fisheye_device", "")
+        # Per-side camera device paths (the Pika fisheye is a UVC camera,
+        # the D405 is addressed by serial). Empty string disables that
+        # side's camera cleanly so single-arm testing works.
+        self.declare_parameter("left_fisheye_device",  "")
+        self.declare_parameter("right_fisheye_device", "")
+        # Shared fisheye config — both sides use identical resolution/
+        # fps/exposure/crop for a consistent UI.
         self.declare_parameter("fisheye_width",  1280)
         self.declare_parameter("fisheye_height", 720)
         self.declare_parameter("fisheye_fps",    30)
-        # Auto-detect the visible image circle and crop to it — removes
-        # the black vignette, saves encode bandwidth, and makes the tile
-        # fill more useful area with content pixels.
         self.declare_parameter("fisheye_circle_crop", True)
-        # V4L2 exposure_time_absolute value (in 100us units). Forces
-        # manual exposure so the camera doesn't halve framerate to
-        # gather more light in dim scenes. 200 = 20ms.
         self.declare_parameter("fisheye_exposure", 200)
-        self.declare_parameter("realsense_serial",  "")
-        self.declare_parameter("realsense_enable",  True)
+        # Per-side RealSense D405 serials. If empty, fall back to
+        # /etc/nero/d405_sides.conf (maintained by nero-detect-pika) —
+        # the detector already knows the side↔serial mapping, so the
+        # webapp picks it up without duplicating config.
+        self.declare_parameter("left_realsense_serial",  "")
+        self.declare_parameter("right_realsense_serial", "")
         self.declare_parameter("realsense_color_w", 1280)
         self.declare_parameter("realsense_color_h", 720)
         self.declare_parameter("realsense_depth_w", 1280)
@@ -156,9 +157,9 @@ class WebappNode(Node):
             self.get_parameter("right_pika_serial").get_parameter_value().string_value,
         )
 
-        # Camera workers — constructed here, started explicitly in start_cameras().
-        self.fisheye: "FisheyeCamera | None" = None
-        self.realsense: "RealSenseCamera | None" = None
+        # Camera workers — per-side, started explicitly in start_cameras().
+        self.fisheye: Dict[str, "FisheyeCamera | None"] = {"left": None, "right": None}
+        self.realsense: Dict[str, "RealSenseCamera | None"] = {"left": None, "right": None}
 
         self.get_logger().info(
             f"nero_webapp: publish /{left_ns}/control/joint_states "
@@ -166,58 +167,111 @@ class WebappNode(Node):
             f"subscribe /{left_ns}/feedback/joint_states and /{right_ns}/feedback/joint_states"
         )
 
-    # ---- cameras (V4L2 fisheye + RealSense) ----------------------------
-    def start_cameras(self) -> None:
-        fish_dev = self.get_parameter("fisheye_device").get_parameter_value().string_value
-        if fish_dev:
-            cam = FisheyeCamera(
-                device_path=fish_dev,
-                width=self.get_parameter("fisheye_width").get_parameter_value().integer_value,
-                height=self.get_parameter("fisheye_height").get_parameter_value().integer_value,
-                fps=self.get_parameter("fisheye_fps").get_parameter_value().integer_value,
-                auto_circle_crop=self.get_parameter("fisheye_circle_crop").get_parameter_value().bool_value,
-                exposure_manual_value=self.get_parameter("fisheye_exposure").get_parameter_value().integer_value,
-            )
-            if cam.start():
-                self.fisheye = cam
-            else:
-                self.get_logger().error(f"fisheye: failed to open {fish_dev}; disabling")
-                cam.stop()
+    # ---- cameras (per-side V4L2 fisheye + RealSense) ------------------
+    def _read_d405_sides_conf(self) -> Dict[str, List[str]]:
+        """Read /etc/nero/d405_sides.conf if present. Returns {side: [serials]}.
 
-        if self.get_parameter("realsense_enable").get_parameter_value().bool_value:
-            rs_cam = RealSenseCamera(
-                serial=self.get_parameter("realsense_serial").get_parameter_value().string_value,
-                color_w=self.get_parameter("realsense_color_w").get_parameter_value().integer_value,
-                color_h=self.get_parameter("realsense_color_h").get_parameter_value().integer_value,
-                depth_w=self.get_parameter("realsense_depth_w").get_parameter_value().integer_value,
-                depth_h=self.get_parameter("realsense_depth_h").get_parameter_value().integer_value,
-                fps=self.get_parameter("realsense_fps").get_parameter_value().integer_value,
-            )
-            if rs_cam.start():
-                self.realsense = rs_cam
+        Parsing is forgiving — comments (#) and blank lines are skipped,
+        same side can appear multiple times (useful when the D405
+        firmware flips between device and ASIC serials — both can be
+        listed and we try each until one opens).
+        """
+        result: Dict[str, List[str]] = {}
+        try:
+            with open("/etc/nero/d405_sides.conf") as f:
+                for line in f:
+                    line = line.split("#", 1)[0].strip()
+                    if not line:
+                        continue
+                    parts = line.split()
+                    if len(parts) != 2:
+                        continue
+                    side, serial = parts
+                    result.setdefault(side, []).append(serial)
+        except OSError:
+            pass
+        return result
+
+    def start_cameras(self) -> None:
+        width  = self.get_parameter("fisheye_width").get_parameter_value().integer_value
+        height = self.get_parameter("fisheye_height").get_parameter_value().integer_value
+        fps    = self.get_parameter("fisheye_fps").get_parameter_value().integer_value
+        crop   = self.get_parameter("fisheye_circle_crop").get_parameter_value().bool_value
+        expo   = self.get_parameter("fisheye_exposure").get_parameter_value().integer_value
+        rs_cw  = self.get_parameter("realsense_color_w").get_parameter_value().integer_value
+        rs_ch  = self.get_parameter("realsense_color_h").get_parameter_value().integer_value
+        rs_dw  = self.get_parameter("realsense_depth_w").get_parameter_value().integer_value
+        rs_dh  = self.get_parameter("realsense_depth_h").get_parameter_value().integer_value
+        rs_fps = self.get_parameter("realsense_fps").get_parameter_value().integer_value
+
+        d405_conf = self._read_d405_sides_conf()
+
+        for side in ("left", "right"):
+            dev = self.get_parameter(f"{side}_fisheye_device").get_parameter_value().string_value
+            if dev:
+                cam = FisheyeCamera(
+                    device_path=dev, width=width, height=height, fps=fps,
+                    auto_circle_crop=crop, exposure_manual_value=expo,
+                    overlay_label=f"fisheye_{side}",
+                )
+                if cam.start():
+                    self.fisheye[side] = cam
+                else:
+                    self.get_logger().error(f"{side} fisheye: failed to open {dev}")
+                    cam.stop()
+
+            # Figure out which D405 serial(s) to try for this side:
+            # explicit ROS param wins, otherwise fall back to the
+            # detector's config file.
+            param_serial = self.get_parameter(
+                f"{side}_realsense_serial").get_parameter_value().string_value
+            if param_serial:
+                candidates = [param_serial]
             else:
-                self.get_logger().error("realsense: pipeline failed to start; disabling")
+                candidates = d405_conf.get(side, [])
+            for serial in candidates:
+                rs_cam = RealSenseCamera(
+                    serial=serial,
+                    color_w=rs_cw, color_h=rs_ch,
+                    depth_w=rs_dw, depth_h=rs_dh,
+                    fps=rs_fps,
+                    color_label=f"color_{side}",
+                    depth_label=f"depth_{side}",
+                )
+                if rs_cam.start():
+                    self.realsense[side] = rs_cam
+                    break
                 rs_cam.stop()
+            else:
+                if candidates:
+                    self.get_logger().error(
+                        f"{side} RealSense: none of {candidates} opened")
 
     def stop_cameras(self) -> None:
-        if self.fisheye is not None:
-            self.fisheye.stop()
-            self.fisheye = None
-        if self.realsense is not None:
-            self.realsense.stop()
-            self.realsense = None
+        for side in ("left", "right"):
+            if self.fisheye[side] is not None:
+                self.fisheye[side].stop()
+                self.fisheye[side] = None
+            if self.realsense[side] is not None:
+                self.realsense[side].stop()
+                self.realsense[side] = None
 
     def camera_slots(self) -> list:
         """Ordered (name, LatestFrame) list for WebRTC track publishing.
 
-        Order matters: browser pairs it with pc.getTransceivers() order.
+        Fixed order — left arm first, right arm second, fisheye/color/
+        depth within each side. The browser uses the server-returned
+        `cameras` list to pair incoming tracks with the matching video
+        element, so disabled sides simply drop out of this list without
+        shifting the others.
         """
         slots = []
-        if self.fisheye is not None:
-            slots.append(("fisheye", self.fisheye.frames))
-        if self.realsense is not None:
-            slots.append(("color", self.realsense.color))
-            slots.append(("depth", self.realsense.depth))
+        for side in ("left", "right"):
+            if self.fisheye[side] is not None:
+                slots.append((f"fisheye_{side}", self.fisheye[side].frames))
+            if self.realsense[side] is not None:
+                slots.append((f"color_{side}", self.realsense[side].color))
+                slots.append((f"depth_{side}", self.realsense[side].depth))
         return slots
 
     # ---- Pika gripper (USB-serial) -------------------------------------

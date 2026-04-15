@@ -371,7 +371,16 @@ function connect() {
 // per expected track, send an SDP offer to /offer, and pair each incoming
 // track with its <video> element by the server-returned "cameras" list.
 
-const CAM_ORDER = ["fisheye", "color", "depth"];
+// Fixed display order for camera tiles. Matches WebappNode.camera_slots()
+// on the server (left arm first, right arm second; fisheye, color, depth
+// within each side). The server can trim any subset out of its /offer
+// answer when that camera isn't connected — the client uses the
+// server's returned `cameras` list to pair incoming tracks with the
+// correct video element regardless of which ones are disabled.
+const CAM_ORDER = [
+  "fisheye_left", "color_left", "depth_left",
+  "fisheye_right", "color_right", "depth_right",
+];
 
 function setCamStatus(name, text, cls) {
   const el = document.getElementById("cam-status-" + name);

@@ -191,11 +191,14 @@ button.btn-send:hover { filter: brightness(1.1); color: #07090c; }
 }
 
 /* --- camera strip (WebRTC live feeds) --------------------------------- */
+/* Two rows × three columns — row 1 = left arm, row 2 = right arm, in
+   left-to-right order fisheye / RS-color / RS-depth. */
 footer.cameras {
   flex: 0 0 auto;
-  height: 260px;
+  height: 380px;
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
   gap: 6px;
   padding: 6px;
   background: var(--panel);
@@ -262,6 +265,9 @@ footer.cameras {
 }
 .cam-stats.warn { color: var(--bad); }
 
+@media (max-height: 900px) {
+  footer.cameras { height: 280px; }
+}
 @media (max-height: 720px) {
-  footer.cameras { height: 200px; }
+  footer.cameras { height: 220px; }
 }
