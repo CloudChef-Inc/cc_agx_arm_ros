@@ -30,32 +30,20 @@ chmod +x "$SCRIPT_SRC"
 ln -snf "$SCRIPT_SRC" /usr/local/bin/nero-detect-pika
 echo "linked /usr/local/bin/nero-detect-pika -> $SCRIPT_SRC"
 
-# 1b. Ensure the D405 serial → side config file exists. When creating
-#     a fresh one, drop the currently-visible serials into the file
-#     (commented) so assigning sides is a one-edit job.
+# 1b. Ensure the D405 serial → side config file exists. We keep the
+#     authoritative template in the repo (setup/d405_sides.conf.example)
+#     so the layout + usage is version-controlled; the /etc copy is
+#     per-machine and we never overwrite it once it exists.
 mkdir -p /etc/nero
+EXAMPLE_SRC="$REPO_ROOT/src/nero_dual_bringup/setup/d405_sides.conf.example"
 if [ ! -f /etc/nero/d405_sides.conf ]; then
-    {
-        echo "# D405 serial → arm side map for nero-detect-pika."
-        echo "# One line per D405: '<side> <serial>'. Edit to match your hardware."
-        echo "# Identify which serial is which side by unplugging that arm's"
-        echo "# Pika bundle and seeing which serial disappears here:"
-        echo "#   python3 -c \"import pyrealsense2 as rs; [print(d.get_info(rs.camera_info.serial_number)) for d in rs.context().devices]\""
-        echo ""
-        echo "# --- currently visible D405 serials (commented) ---"
-        if python3 -c "import pyrealsense2" 2>/dev/null; then
-            python3 -c "
-import pyrealsense2 as rs
-for d in rs.context().devices:
-    print('# ' + d.get_info(rs.camera_info.serial_number))
-"
-        fi
-        echo ""
-        echo "# --- active assignments (uncomment + edit) ---"
-        echo "# right <serial>"
-        echo "# left  <serial>"
-    } > /etc/nero/d405_sides.conf
-    echo "wrote template /etc/nero/d405_sides.conf — edit it to assign sides"
+    if [ -f "$EXAMPLE_SRC" ]; then
+        install -m 0644 "$EXAMPLE_SRC" /etc/nero/d405_sides.conf
+        echo "installed /etc/nero/d405_sides.conf from example — edit it to assign sides"
+    else
+        echo "# D405 serial → arm side map — see setup/d405_sides.conf.example" > /etc/nero/d405_sides.conf
+        echo "wrote minimal /etc/nero/d405_sides.conf (example missing from repo)"
+    fi
 else
     echo "keeping existing /etc/nero/d405_sides.conf"
 fi

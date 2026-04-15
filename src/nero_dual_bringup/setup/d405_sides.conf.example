@@ -1,0 +1,35 @@
+# D405 serial → arm side map for nero-detect-pika.
+#
+# This file gets installed to /etc/nero/d405_sides.conf by
+# setup/install_pika_detector.sh on first run. Once the per-host file
+# exists, the installer leaves it alone — edit it in place when the
+# hardware changes; don't commit machine-specific serials back here.
+#
+# Format: one assignment per line, "<side> <serial>". Comments and
+# blank lines are ignored. A side may appear more than once — useful
+# because the D405 firmware can flip between reporting its device
+# serial and its ASIC serial on reconnect, so listing every serial
+# we've ever seen for that physical camera lets the detector and
+# webapp try each in turn until one opens.
+#
+# --- identifying a D405's side ---------------------------------------
+# Plug only one arm's Pika bundle in. Observe which serial(s) appear:
+#   for i in 1 2 3 4 5; do \
+#     python3 -c "import pyrealsense2 as rs; \
+#       [print(d.get_info(rs.camera_info.serial_number)) \
+#        for d in rs.context().devices]" | sort -u; \
+#     sleep 1; \
+#   done | sort -u
+# Label whatever shows up with the arm that's plugged in. Add a line
+# per distinct serial observed (multiple lines per side are fine).
+# Then plug the other arm in and repeat.
+#
+# --- current hardware snapshot (CloudChef Jetson feather) ------------
+# Leave these commented out in the repo; uncomment in the /etc copy on
+# the target host. The installer will drop them verbatim into
+# /etc/nero/d405_sides.conf the first time it runs, then never touch
+# the file again.
+
+# right 412622273124
+# right 243223071734
+# left  230322274240
