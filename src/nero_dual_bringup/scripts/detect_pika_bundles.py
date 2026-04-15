@@ -35,12 +35,10 @@ import sys
 import time
 from typing import Dict, Optional, Tuple
 
-# --- EDIT WHEN ADDING / SWAPPING D405 CAMERAS ----------------------------
-SIDE_BY_D405_SERIAL: Dict[str, str] = {
-    "412622273124": "right",
-    "230322274240": "left",
-}
-# -------------------------------------------------------------------------
+# Serial → side map lives in this config file (one entry per line,
+# "<side> <serial>"). Keep it out of code so hardware swaps are a
+# one-liner edit with no git push.
+SIDES_CONF_PATH = "/etc/nero/d405_sides.conf"
 
 SYSFS_USB = "/sys/bus/usb/devices"
 D405_VID, D405_PID = "8086", "0b5b"
@@ -74,6 +72,31 @@ def find_d405_paths() -> Dict[str, str]:
             if serial:
                 out[serial] = os.path.basename(d)
     return out
+
+
+def load_sides_config() -> Dict[str, str]:
+    """Parse /etc/nero/d405_sides.conf — lines like '<side> <serial>'.
+
+    Comments (#) and blank lines ignored. Returns {serial: side}.
+    """
+    mapping: Dict[str, str] = {}
+    try:
+        with open(SIDES_CONF_PATH) as f:
+            for lineno, line in enumerate(f, 1):
+                line = line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) != 2:
+                    print(f"nero-detect-pika: {SIDES_CONF_PATH}:{lineno}: "
+                          f"expected '<side> <serial>', got {line!r}",
+                          file=sys.stderr)
+                    continue
+                side, serial = parts
+                mapping[serial] = side
+    except FileNotFoundError:
+        pass
+    return mapping
 
 
 def derive_usb2_prefix(bundle_usb3_hub: str
@@ -170,12 +193,23 @@ def main() -> int:
         print("nero-detect-pika: no D405s after 15s wait", file=sys.stderr)
         return 1
 
+    sides = load_sides_config()
+    if not sides:
+        print(f"nero-detect-pika: no config at {SIDES_CONF_PATH}. "
+              f"Currently visible D405 serials: "
+              f"{sorted(d405s.keys())}. Create the file with one line "
+              f"per side, e.g. 'right {next(iter(d405s))}'.",
+              file=sys.stderr)
+        return 1
+
     rc = 0
     for serial, d405_path in sorted(d405s.items()):
-        side = SIDE_BY_D405_SERIAL.get(serial)
+        side = sides.get(serial)
         if not side:
-            print(f"nero-detect-pika: unknown D405 serial {serial!r} "
-                  f"(add to SIDE_BY_D405_SERIAL)", file=sys.stderr)
+            print(f"nero-detect-pika: D405 serial {serial!r} not in "
+                  f"{SIDES_CONF_PATH} — known sides: {sides}. "
+                  f"Visible serials right now: {sorted(d405s.keys())}.",
+                  file=sys.stderr)
             rc = max(rc, 2)
             continue
         if "." not in d405_path:

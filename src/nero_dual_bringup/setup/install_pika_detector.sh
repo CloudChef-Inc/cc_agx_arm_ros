@@ -27,6 +27,36 @@ SERVICE_SRC="$REPO_ROOT/src/nero_dual_bringup/setup/nero-detect-pika.service"
 install -m 0755 "$SCRIPT_SRC" /usr/local/bin/nero-detect-pika
 echo "installed /usr/local/bin/nero-detect-pika"
 
+# 1b. Ensure the D405 serial → side config file exists. When creating
+#     a fresh one, drop the currently-visible serials into the file
+#     (commented) so assigning sides is a one-edit job.
+mkdir -p /etc/nero
+if [ ! -f /etc/nero/d405_sides.conf ]; then
+    {
+        echo "# D405 serial → arm side map for nero-detect-pika."
+        echo "# One line per D405: '<side> <serial>'. Edit to match your hardware."
+        echo "# Identify which serial is which side by unplugging that arm's"
+        echo "# Pika bundle and seeing which serial disappears here:"
+        echo "#   python3 -c \"import pyrealsense2 as rs; [print(d.get_info(rs.camera_info.serial_number)) for d in rs.context().devices]\""
+        echo ""
+        echo "# --- currently visible D405 serials (commented) ---"
+        if python3 -c "import pyrealsense2" 2>/dev/null; then
+            python3 -c "
+import pyrealsense2 as rs
+for d in rs.context().devices:
+    print('# ' + d.get_info(rs.camera_info.serial_number))
+"
+        fi
+        echo ""
+        echo "# --- active assignments (uncomment + edit) ---"
+        echo "# right <serial>"
+        echo "# left  <serial>"
+    } > /etc/nero/d405_sides.conf
+    echo "wrote template /etc/nero/d405_sides.conf — edit it to assign sides"
+else
+    echo "keeping existing /etc/nero/d405_sides.conf"
+fi
+
 # 2. Install the systemd unit.
 install -m 0644 "$SERVICE_SRC" /etc/systemd/system/nero-detect-pika.service
 systemctl daemon-reload
