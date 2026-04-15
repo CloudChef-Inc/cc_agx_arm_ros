@@ -1,0 +1,14 @@
+[Unit]
+Description=Discover Pika bundles via D405 serial and create stable /dev symlinks
+After=multi-user.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nero-detect-pika
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
