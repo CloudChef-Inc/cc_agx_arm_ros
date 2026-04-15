@@ -154,7 +154,9 @@ def first_video_node(usb_path: str) -> Optional[str]:
     UVC capture node (higher-indexed siblings are metadata)."""
     base = f"{SYSFS_USB}/{usb_path}"
     nodes = []
-    for link in glob.glob(f"{base}/*/video4linux/video*"):
+    # Recursive glob — some cameras expose video* directly under the
+    # interface dir, others nest it one level deeper.
+    for link in glob.glob(f"{base}/**/video4linux/video*", recursive=True):
         nodes.append(os.path.basename(link))
     if not nodes:
         return None
@@ -164,7 +166,9 @@ def first_video_node(usb_path: str) -> Optional[str]:
 
 def first_tty_node(usb_path: str) -> Optional[str]:
     base = f"{SYSFS_USB}/{usb_path}"
-    for link in glob.glob(f"{base}/*/tty/tty*"):
+    # Recursive — CH340 exposes tty/ttyUSBN two levels under the
+    # interface dir, not one.
+    for link in glob.glob(f"{base}/**/tty/tty*", recursive=True):
         return os.path.basename(link)
     return None
 
