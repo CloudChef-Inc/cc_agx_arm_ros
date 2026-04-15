@@ -236,23 +236,34 @@ def main() -> int:
             rc = max(rc, 3)
             continue
 
-        bundle_usb3_hub = d405_path.rsplit(".", 1)[0]
-        prefix = derive_usb2_prefix(bundle_usb3_hub)
-        if not prefix:
+        # USB3 enumerates before USB2 on some platforms. When we're
+        # fired from a udev D405-add event, the bundle's CH340 and
+        # DECXIN may still be coming up. Retry for a few seconds.
+        sibling_deadline = time.monotonic() + 8.0
+        bundle_usb2_hub = None
+        ch340 = None
+        decxin = None
+        while time.monotonic() < sibling_deadline:
+            bundle_usb3_hub = d405_path.rsplit(".", 1)[0]
+            prefix = derive_usb2_prefix(bundle_usb3_hub)
+            if prefix:
+                usb3_anc, usb2_anc = prefix
+                suffix = bundle_usb3_hub[len(usb3_anc):]
+                bundle_usb2_hub = usb2_anc + suffix
+                ch340 = child_at_port(bundle_usb2_hub, PIKA_GRIPPER_PORT,
+                                      CH340_VID, CH340_PID)
+                decxin = child_at_port(bundle_usb2_hub, PIKA_FISHEYE_PORT,
+                                       DECXIN_VID, DECXIN_PID)
+                if ch340 and decxin:
+                    break
+            time.sleep(0.5)
+
+        if not bundle_usb2_hub:
             print(f"nero-detect-pika: cannot map USB3→USB2 for "
-                  f"{bundle_usb3_hub} (D405 serial {serial}, side {side}). "
-                  f"Bundle's USB2 side may not be enumerated.",
-                  file=sys.stderr)
+                  f"{d405_path.rsplit('.', 1)[0]} (D405 {serial}, {side}) "
+                  f"within 8s.", file=sys.stderr)
             rc = max(rc, 4)
             continue
-        usb3_anc, usb2_anc = prefix
-        suffix = bundle_usb3_hub[len(usb3_anc):]
-        bundle_usb2_hub = usb2_anc + suffix
-
-        ch340 = child_at_port(bundle_usb2_hub, PIKA_GRIPPER_PORT,
-                              CH340_VID, CH340_PID)
-        decxin = child_at_port(bundle_usb2_hub, PIKA_FISHEYE_PORT,
-                               DECXIN_VID, DECXIN_PID)
 
         if ch340:
             tty = first_tty_node(ch340)
