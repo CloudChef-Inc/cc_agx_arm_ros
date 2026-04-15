@@ -149,15 +149,34 @@ def child_at_port(hub_path: str, port: str, vid: str, pid: str
     return None
 
 
+def _find_first(base: str, subsystem: str, prefix: str) -> Optional[str]:
+    """Return the basename of the first matching subsystem node under
+    a USB device, searching at most 2 directory levels below `base`.
+
+    We can't use glob.glob(..., recursive=True) on sysfs: symlinks back
+    up the tree turn `**` into an infinite walk that never returns.
+    Enumerate explicit fixed-depth patterns instead.
+    """
+    for pattern in (
+        f"{base}/*/{subsystem}/{prefix}*",       # one level deep
+        f"{base}/*/*/{subsystem}/{prefix}*",     # two levels deep
+    ):
+        for link in glob.glob(pattern):
+            return os.path.basename(link)
+    return None
+
+
 def first_video_node(usb_path: str) -> Optional[str]:
     """Lowest-numbered /dev/videoN under a USB device — that's the
     UVC capture node (higher-indexed siblings are metadata)."""
     base = f"{SYSFS_USB}/{usb_path}"
     nodes = []
-    # Recursive glob — some cameras expose video* directly under the
-    # interface dir, others nest it one level deeper.
-    for link in glob.glob(f"{base}/**/video4linux/video*", recursive=True):
-        nodes.append(os.path.basename(link))
+    for pattern in (
+        f"{base}/*/video4linux/video*",
+        f"{base}/*/*/video4linux/video*",
+    ):
+        for link in glob.glob(pattern):
+            nodes.append(os.path.basename(link))
     if not nodes:
         return None
     nodes.sort(key=lambda s: int(s.replace("video", "")))
@@ -165,12 +184,7 @@ def first_video_node(usb_path: str) -> Optional[str]:
 
 
 def first_tty_node(usb_path: str) -> Optional[str]:
-    base = f"{SYSFS_USB}/{usb_path}"
-    # Recursive — CH340 exposes tty/ttyUSBN two levels under the
-    # interface dir, not one.
-    for link in glob.glob(f"{base}/**/tty/tty*", recursive=True):
-        return os.path.basename(link)
-    return None
+    return _find_first(f"{SYSFS_USB}/{usb_path}", "tty", "tty")
 
 
 def atomic_symlink(target_basename: str, link_path: str) -> None:
