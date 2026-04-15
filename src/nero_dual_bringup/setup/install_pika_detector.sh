@@ -23,9 +23,12 @@ SERVICE_SRC="$REPO_ROOT/src/nero_dual_bringup/setup/nero-detect-pika.service"
 [ -f "$SCRIPT_SRC" ] || { echo "missing $SCRIPT_SRC" >&2; exit 1; }
 [ -f "$SERVICE_SRC" ] || { echo "missing $SERVICE_SRC" >&2; exit 1; }
 
-# 1. Install the script.
-install -m 0755 "$SCRIPT_SRC" /usr/local/bin/nero-detect-pika
-echo "installed /usr/local/bin/nero-detect-pika"
+# 1. Install the script as a symlink into the repo, so `git pull`
+#    alone picks up future updates — no need to re-run this installer
+#    every time the detector logic changes.
+chmod +x "$SCRIPT_SRC"
+ln -snf "$SCRIPT_SRC" /usr/local/bin/nero-detect-pika
+echo "linked /usr/local/bin/nero-detect-pika -> $SCRIPT_SRC"
 
 # 1b. Ensure the D405 serial → side config file exists. When creating
 #     a fresh one, drop the currently-visible serials into the file
