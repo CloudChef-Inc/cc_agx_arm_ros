@@ -110,12 +110,13 @@ def camera_chain_desc(name: str, width: int, height: int, fps: int,
         # immediately, don't bundle multiple frames.
         f"! rtph264pay name={name}_pay pt=96 config-interval=1 "
         f"    aggregate-mode=zero-latency "
-        # Queue + caps right before linking to webrtcbin matches the
-        # canonical layout in GStreamer's gst-webrtc demos. The
-        # caps include clock-rate=90000 (the standard H.264 RTP
-        # timebase) — webrtcbin rejected the caps without it.
-        f"! queue "
-        f"! application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000"
+        # Trailing queue. We DON'T add a trailing inline caps spec
+        # here — gst.parse_bin_from_description rejects
+        # `application/x-rtp,...` ('no element "application"'). The
+        # caps that webrtcbin requires are set explicitly via
+        # add-transceiver in WebRtcSession, and rtph264pay's native
+        # output caps already include all the right fields.
+        f"! queue"
     )
 
 
