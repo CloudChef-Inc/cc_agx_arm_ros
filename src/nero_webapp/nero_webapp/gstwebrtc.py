@@ -244,13 +244,14 @@ class WebRtcSession:
             bin_ = src.build()
             if not self.pipeline.add(bin_):
                 raise RuntimeError(f"could not add {name} bin")
-            src_pad = bin_.get_static_pad("src")
-            sink_pad = self.webrtcbin.get_request_pad("sink_%u")
-            if sink_pad is None:
-                raise RuntimeError(f"no sink_%u pad available for {name}")
-            link = src_pad.link(sink_pad)
-            if link != Gst.PadLinkReturn.OK:
-                raise RuntimeError(f"link {name} → webrtcbin failed: {link}")
+            # Link the source bin to webrtcbin. Calling .link() on a
+            # bin to webrtcbin auto-requests a sink_%u pad on
+            # webrtcbin and connects to it — this is the supported
+            # path in modern GStreamer (the old explicit
+            # get_request_pad("sink_%u") doesn't auto-resolve %u and
+            # returns None).
+            if not bin_.link(self.webrtcbin):
+                raise RuntimeError(f"link {name} → webrtcbin failed")
             self.sources.append(src)
             self.camera_names.append(name)
 
