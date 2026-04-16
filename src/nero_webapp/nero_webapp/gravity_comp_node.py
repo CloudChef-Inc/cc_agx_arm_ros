@@ -66,11 +66,12 @@ class GravityCompNode(Node):
         # Maximum torque per joint (N·m). Safety clamp.
         self.declare_parameter("torque_limit", 5.0)
         # Arm mounting orientation on the torso (roll, pitch, yaw in
-        # radians). The URDF models the arm upright; this rotation
-        # transforms the gravity vector into the arm's base frame.
-        # Default: right arm side-mount from the dual-arm xacro.
-        self.declare_parameter(
-            "mount_rpy", [3.14159, 1.5708, 0.0])
+        # radians, URDF extrinsic-XYZ convention). The URDF models
+        # the arm upright; this rotation transforms the gravity
+        # vector into the arm's base frame.
+        # From two_nero.urdf.xacro: right = pi/2 0 0, left = -pi/2 0 0.
+        default_rpy = [1.5708, 0.0, 0.0] if side == "right" else [-1.5708, 0.0, 0.0]
+        self.declare_parameter("mount_rpy", default_rpy)
         # Stale-data timeout: if we haven't received feedback in this
         # many seconds, stop sending torques (safety).
         self.declare_parameter("feedback_timeout", 0.1)
@@ -148,7 +149,9 @@ class GravityCompNode(Node):
         frame using the mount RPY, and write it into the Pinocchio
         model's gravity field."""
         from scipy.spatial.transform import Rotation as R
-        rot = R.from_euler("xyz", rpy)
+        # URDF RPY is extrinsic XYZ (fixed-axis): R = Rz(yaw) @ Ry(pitch) @ Rx(roll).
+        # scipy's uppercase "XYZ" matches this convention.
+        rot = R.from_euler("XYZ", rpy)
         g_world = np.array([0.0, 0.0, -9.81])
         g_arm = rot.inv().apply(g_world)
         self.model.gravity = pin.Motion(
