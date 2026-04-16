@@ -59,6 +59,14 @@ def _auto_crop_rect(frame: np.ndarray, threshold: int = 16
     if (y1 - y0 + 1) >= int(h * 0.995) and (x1 - x0 + 1) >= int(w * 0.995):
         return None
     size = max(x1 - x0, y1 - y0)
+    # Snap size DOWN to a multiple of 16. videoconvert + nvv4l2h264enc
+    # both require stride-aligned buffers, and a non-aligned width
+    # surfaces as "invalid video buffer received" later in the
+    # encoder pipeline. 16 is a safe choice — covers most encoder
+    # alignment requirements.
+    size = (size // 16) * 16
+    if size <= 0:
+        return None
     cx = (x0 + x1) // 2
     cy = (y0 + y1) // 2
     half = size // 2
@@ -66,6 +74,11 @@ def _auto_crop_rect(frame: np.ndarray, threshold: int = 16
     ys = max(0, cy - half)
     xe = min(w, xs + size)
     ye = min(h, ys + size)
+    # Re-anchor so the requested square actually fits within the sensor.
+    if xe - xs < size:
+        xs = max(0, xe - size)
+    if ye - ys < size:
+        ys = max(0, ye - size)
     return xs, ys, xe, ye
 
 
