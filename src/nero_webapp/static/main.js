@@ -287,6 +287,22 @@ function buildSliders() {
     panels[side].querySelector(".btn-send").onclick = () => sendCommand(side);
     panels[side].querySelector(".btn-zero").onclick = () => zeroSliders(side);
     panels[side].querySelector(".btn-sync").onclick = () => syncFromRobot(side);
+
+    const floatBtn = panels[side].querySelector(".btn-float");
+    if (floatBtn) {
+      floatBtn.onclick = async () => {
+        const enabling = !floatBtn.classList.contains("active");
+        const resp = await fetch("/gravity_comp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ side, enabled: enabling }),
+        });
+        if (resp.ok) {
+          floatBtn.classList.toggle("active", enabling);
+          floatBtn.textContent = enabling ? "Float ON" : "Float";
+        }
+      };
+    }
   }
 }
 

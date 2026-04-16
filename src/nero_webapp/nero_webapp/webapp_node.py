@@ -430,6 +430,50 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
     async def joint_limits() -> Dict:
         return {"names": node.joint_names, "limits": JOINT_LIMITS}
 
+    # ---- gravity comp toggle (calls the gravity_comp node's param) ----
+    # Lazy-create parameter clients per side on first use so the
+    # webapp doesn't crash if the gravity_comp node isn't running.
+    _param_clients: Dict[str, object] = {}
+
+    def _get_param_client(side: str):
+        if side not in _param_clients:
+            from rcl_interfaces.srv import SetParameters
+            name = f"/gravity_comp_{side}/set_parameters"
+            _param_clients[side] = node.create_client(SetParameters, name)
+        return _param_clients[side]
+
+    @app.post("/gravity_comp")
+    async def gravity_comp(request: Request) -> Dict:
+        import asyncio
+        from rcl_interfaces.msg import Parameter as ParamMsg
+        from rcl_interfaces.msg import ParameterValue, ParameterType
+        from rcl_interfaces.srv import SetParameters
+
+        body = await request.json()
+        side = body.get("side", "right")
+        enabled = bool(body.get("enabled", False))
+
+        client = _get_param_client(side)
+        if not client.wait_for_service(timeout_sec=1.0):
+            return {"ok": False, "error": f"gravity_comp_{side} not running"}
+
+        req = SetParameters.Request()
+        p = ParamMsg()
+        p.name = "enabled"
+        p.value = ParameterValue()
+        p.value.type = ParameterType.PARAMETER_BOOL
+        p.value.bool_value = enabled
+        req.parameters = [p]
+
+        future = client.call_async(req)
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: rclpy.spin_until_future_complete(node, future, timeout_sec=2.0)
+        )
+        resp = future.result()
+        if resp and resp.results and resp.results[0].successful:
+            return {"ok": True, "side": side, "enabled": enabled}
+        return {"ok": False, "error": "parameter set failed"}
+
     @app.get("/stats")
     async def stats() -> Dict:
         """Per-camera capture stats (fps, last-frame shape).

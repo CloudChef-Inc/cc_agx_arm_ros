@@ -177,6 +177,9 @@ button {
 button:hover { border-color: var(--accent); color: var(--accent); }
 button.btn-send { background: var(--accent); color: #07090c; border-color: var(--accent); }
 button.btn-send:hover { filter: brightness(1.1); color: #07090c; }
+button.btn-float { background: var(--panel-2); }
+button.btn-float.active { background: var(--ok); color: #07090c; border-color: var(--ok); }
+button.btn-float.active:hover { filter: brightness(1.1); color: #07090c; }
 
 /* On narrow screens stack controls under the viewport instead of overlapping. */
 @media (max-width: 900px) {

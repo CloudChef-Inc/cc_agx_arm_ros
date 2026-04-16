@@ -42,8 +42,8 @@ N_ARM_JOINTS = 7
 
 
 class GravityCompNode(Node):
-    def __init__(self) -> None:
-        super().__init__("gravity_comp")
+    def __init__(self, node_name: str = "gravity_comp") -> None:
+        super().__init__(node_name)
 
         if pin is None:
             self.get_logger().fatal(
@@ -208,7 +208,15 @@ class GravityCompNode(Node):
 def main() -> None:
     rclpy.init()
     try:
-        node = GravityCompNode()
+        # Use side-specific node name so the webapp can target each
+        # arm's parameter service independently (gravity_comp_left,
+        # gravity_comp_right).
+        import sys
+        side = "right"
+        for i, arg in enumerate(sys.argv):
+            if "side:=" in arg:
+                side = arg.split(":=")[1]
+        node = GravityCompNode(node_name=f"gravity_comp_{side}")
         rclpy.spin(node)
     except SystemExit:
         pass
