@@ -229,9 +229,12 @@ class WebRtcSession:
         if sink_template is None:
             raise RuntimeError("webrtcbin has no sink_%u pad template")
 
+        # Don't pin a specific payload type — browsers use different
+        # PT numbers for H.264 (Chrome 102, Firefox 96, etc.) and
+        # webrtcbin's create-answer needs to find a match against the
+        # offer. clock-rate is the only mandatory non-codec field.
         rtp_caps = Gst.Caps.from_string(
-            "application/x-rtp,media=video,encoding-name=H264,"
-            "payload=96,clock-rate=90000"
+            "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000"
         )
 
         self.sources: List[CameraFeeder] = []
@@ -348,6 +351,11 @@ class WebRtcSession:
         offer = GstWebRTC.WebRTCSessionDescription.new(
             GstWebRTC.WebRTCSDPType.OFFER, sdp_msg
         )
+
+        # Log the offer SDP at INFO so we can see what codecs / PTs /
+        # profile-level-ids the browser advertises if create-answer
+        # fails downstream. Helpful for debugging codec-mismatch.
+        logger.info("session %s offer SDP:\n%s", self.id, offer_sdp_text)
 
         # 1. set remote description (offer)
         promise = Gst.Promise.new()
