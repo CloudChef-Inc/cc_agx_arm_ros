@@ -129,59 +129,40 @@ def _slot_dims(slot: LatestFrame, default: Tuple[int, int] = (1280, 720)
     return default
 
 
-# ---------- per-camera source bin ---------------------------------------
+# ---------- per-camera frame feeder -------------------------------------
 
-class CameraSourceBin:
-    """One bin per camera: appsrc → ... → rtph264pay.
+class CameraFeeder:
+    """Owns the appsrc element for one camera and the thread that
+    pumps frames from a LatestFrame slot into it.
 
-    Owns a feeder thread that pulls frames from a LatestFrame slot and
-    pushes them into the appsrc. The bin's ghost source pad gets
-    linked to one webrtcbin sink pad.
+    The element itself is constructed by Gst.parse_launch as part of
+    the session pipeline — we just hold a reference to it via
+    pipeline.get_by_name() and drive push-buffer.
     """
 
-    def __init__(self, name: str, slot: LatestFrame, width: int,
-                 height: int, fps: int):
+    def __init__(self, name: str, slot: LatestFrame, appsrc: Gst.Element):
         self.name = name
         self.slot = slot
-        self.width = width
-        self.height = height
-        self.fps = fps
-        self.bin: Optional[Gst.Bin] = None
-        self.appsrc: Optional[Gst.Element] = None
+        self.appsrc = appsrc
         self._feeder_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
-    def build(self) -> Gst.Bin:
-        desc = camera_chain_desc(self.name, self.width, self.height, self.fps)
-        # ghost_unlinked_pads=True exposes the rtph264pay's src as the
-        # bin's own src pad, ready to be linked into webrtcbin.
-        self.bin = Gst.parse_bin_from_description(desc, True)
-        if self.bin is None:
-            raise RuntimeError(f"failed to parse pipeline for {self.name}")
-        self.bin.set_property("name", f"{self.name}_bin")
-        self.appsrc = self.bin.get_by_name(f"{self.name}_src")
-        if self.appsrc is None:
-            raise RuntimeError(f"appsrc element missing in {self.name}")
-        return self.bin
-
-    def start_feeder(self) -> None:
+    def start(self) -> None:
         self._feeder_thread = threading.Thread(
             target=self._feed_loop, daemon=True, name=f"{self.name}-feeder",
         )
         self._feeder_thread.start()
 
-    def stop_feeder(self) -> None:
+    def stop(self) -> None:
         self._stop.set()
-        if self.appsrc is not None:
-            try:
-                self.appsrc.emit("end-of-stream")
-            except Exception:  # noqa: BLE001
-                pass
+        try:
+            self.appsrc.emit("end-of-stream")
+        except Exception:  # noqa: BLE001
+            pass
         if self._feeder_thread is not None:
             self._feeder_thread.join(timeout=2.0)
 
     def _feed_loop(self) -> None:
-        """Pull from LatestFrame, push to appsrc until stopped."""
         last_seq = 0
         while not self._stop.is_set():
             res = self.slot.wait_new(last_seq, 1.0)
@@ -209,66 +190,57 @@ class CameraSourceBin:
 
 class WebRtcSession:
     """One per browser PeerConnection. Owns a Gst.Pipeline + webrtcbin
-    + one CameraSourceBin per active camera.
+    + one CameraFeeder per active camera.
+
+    The pipeline is built in a SINGLE Gst.parse_launch call: gst-launch
+    syntax `chain ! sender.` (trailing dot on the named webrtcbin
+    element) is the canonical way to link multiple sources to webrtcbin.
+    Auto-resolves the sink_%u request pad request that the explicit
+    Python API has trouble with on this binding.
     """
 
     def __init__(self, slots_in_order: List[Tuple[str, LatestFrame]],
                  fps: int = 30):
         self.id = id(self)
-        self.pipeline = Gst.Pipeline.new(f"session_{self.id}")
 
-        self.webrtcbin = Gst.ElementFactory.make("webrtcbin", f"sender_{self.id}")
-        if self.webrtcbin is None:
-            raise RuntimeError("webrtcbin element not available")
-        self.webrtcbin.set_property(
-            "bundle-policy", GstWebRTC.WebRTCBundlePolicy.MAX_BUNDLE,
-        )
-        self.webrtcbin.set_property(
-            "stun-server", "stun://stun.l.google.com:19302",
-        )
-        if not self.pipeline.add(self.webrtcbin):
-            raise RuntimeError("could not add webrtcbin to pipeline")
-
-        self.sources: List[CameraSourceBin] = []
-        # Camera names in negotiation order so the answer's m-lines
-        # line up with the browser's offer's recvonly transceivers.
-        # The browser already lists them in this same order via its
-        # CAM_ORDER array.
-        self.camera_names: List[str] = []
-
+        camera_specs: List[Tuple[str, LatestFrame]] = []
+        chain_strs: List[str] = []
         for name, slot in slots_in_order:
             if slot is None:
                 continue
             w, h = _slot_dims(slot)
-            src = CameraSourceBin(name, slot, w, h, fps)
-            bin_ = src.build()
-            if not self.pipeline.add(bin_):
-                raise RuntimeError(f"could not add {name} bin")
-            # Get the bin's ghost src pad (created by parse_bin with
-            # ghost_unlinked_pads=True; it wraps the rtph264pay's
-            # capsfilter src).
-            src_pad = bin_.get_static_pad("src")
-            if src_pad is None:
-                raise RuntimeError(f"{name}: no ghost src pad on bin")
-            # Request a sink pad on webrtcbin. Try the modern API
-            # name first (request_pad_simple, GStreamer 1.20+); fall
-            # back to the older get_request_pad if that's all this
-            # binding has.
-            sink_pad = None
-            if hasattr(self.webrtcbin, "request_pad_simple"):
-                sink_pad = self.webrtcbin.request_pad_simple("sink_%u")
-            if sink_pad is None:
-                # Try with explicit numbered template via the older API.
-                idx = len(self.sources)
-                sink_pad = self.webrtcbin.get_request_pad(f"sink_{idx}")
-            if sink_pad is None:
-                raise RuntimeError(
-                    f"{name}: webrtcbin would not provide a sink pad")
-            link_ret = src_pad.link(sink_pad)
-            if link_ret != Gst.PadLinkReturn.OK:
-                raise RuntimeError(
-                    f"{name}: pad link to webrtcbin returned {link_ret}")
-            self.sources.append(src)
+            # The trailing `! sender.` links this chain's last element
+            # (the rtp capsfilter) to the next available request pad
+            # on the webrtcbin element named `sender`.
+            chain_strs.append(camera_chain_desc(name, w, h, fps) + " ! sender.")
+            camera_specs.append((name, slot))
+
+        if not chain_strs:
+            raise RuntimeError("no enabled cameras to publish")
+
+        full_desc = (
+            "webrtcbin name=sender "
+            "bundle-policy=max-bundle "
+            "stun-server=stun://stun.l.google.com:19302 " +
+            " ".join(chain_strs)
+        )
+        try:
+            self.pipeline = Gst.parse_launch(full_desc)
+        except GLib.GError as e:
+            raise RuntimeError(f"pipeline parse failed: {e.message}")
+
+        self.webrtcbin = self.pipeline.get_by_name("sender")
+        if self.webrtcbin is None:
+            raise RuntimeError("webrtcbin 'sender' missing from parsed pipeline")
+
+        # Wrap each appsrc in a feeder.
+        self.sources: List[CameraFeeder] = []
+        self.camera_names: List[str] = []
+        for name, slot in camera_specs:
+            appsrc = self.pipeline.get_by_name(f"{name}_src")
+            if appsrc is None:
+                raise RuntimeError(f"appsrc {name}_src missing from pipeline")
+            self.sources.append(CameraFeeder(name, slot, appsrc))
             self.camera_names.append(name)
 
         # Threading.Event signalled when ICE gathering reaches COMPLETE
@@ -353,7 +325,7 @@ class WebRtcSession:
         if rc == Gst.StateChangeReturn.FAILURE:
             raise RuntimeError("pipeline failed to enter PLAYING")
         for src in self.sources:
-            src.start_feeder()
+            src.start()
 
         # 3. create answer
         promise = Gst.Promise.new()
@@ -383,7 +355,7 @@ class WebRtcSession:
 
     def stop(self) -> None:
         for src in self.sources:
-            src.stop_feeder()
+            src.stop()
         try:
             self.pipeline.set_state(Gst.State.NULL)
         except Exception:  # noqa: BLE001
