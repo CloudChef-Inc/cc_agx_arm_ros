@@ -52,7 +52,12 @@ from sensor_msgs.msg import JointState
 import uvicorn
 
 from .cameras import FisheyeCamera, RealSenseCamera
-from .webrtc import setup_webrtc_routes
+# GStreamer + NVENC backend. Encode happens on dedicated Tegra
+# hardware so we can run all 6 streams without saturating the CPU
+# (the previous aiortc/libx264 backend topped out around 2 streams
+# at 720p before encoder backpressure caused the browser to see
+# near-zero fps). Browser-facing protocol is unchanged.
+from .gstwebrtc import setup_webrtc_routes
 
 
 # Default Nero joint names (7 revolute + gripper). Match nero_description.urdf.
