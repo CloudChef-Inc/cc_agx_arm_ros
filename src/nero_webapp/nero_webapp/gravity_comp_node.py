@@ -190,9 +190,18 @@ class GravityCompNode(Node):
         pin.computeGeneralizedGravity(self.model, self.data, q)
         tau_g = self.data.g.copy()
 
+        # Extract current arm joint positions for p_des. Setting
+        # p_des=current_position gives the firmware's internal
+        # controller zero position error — otherwise p_des=0 tells
+        # it to drive toward home, and that restoring force makes
+        # the arm rigid regardless of our kp=0.
+        current_positions = []
+        for i in range(N_ARM_JOINTS):
+            current_positions.append(float(q[self.pin_q_indices[i]]))
+
         msg = MoveMITMsg()
         msg.joint_index = list(range(1, N_ARM_JOINTS + 1))
-        msg.p_des = [0.0] * N_ARM_JOINTS
+        msg.p_des = current_positions
         msg.v_des = [0.0] * N_ARM_JOINTS
         msg.kp = [0.0] * N_ARM_JOINTS
         msg.kd = self.kd[:N_ARM_JOINTS]
