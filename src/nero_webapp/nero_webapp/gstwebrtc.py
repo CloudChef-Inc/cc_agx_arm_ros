@@ -230,15 +230,13 @@ class WebRtcSession:
         if sink_template is None:
             raise RuntimeError("webrtcbin has no sink_%u pad template")
 
-        # H.264 transceiver caps with the constrained-baseline
-        # profile-level-id (42e01f) at packetization-mode=1. Both
-        # widely supported by browsers and what NVENC outputs by
-        # default. Without a profile-level-id, webrtcbin's
-        # create-answer can't find a match in the offer's H.264
-        # m-line and silently drops the answer.
+        # H.264 transceiver caps with constrained-baseline 3.1
+        # (42e01f) and packetization-mode=1 — both widely supported
+        # by browsers (Chrome PT 109, Firefox 126).
         rtp_caps = Gst.Caps.from_string(
             "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,"
-            "profile-level-id=(string)42e01f,packetization-mode=(string)1"
+            "profile-level-id=(string)42e01f,packetization-mode=(string)1,"
+            "level-asymmetry-allowed=(string)1"
         )
 
         self.sources: List[CameraFeeder] = []
@@ -369,19 +367,28 @@ class WebRtcSession:
         # 2. create answer + set local description BEFORE starting
         #    feeders. If feeders push data while create-answer is
         #    in flight, downstream errors / EOS on the chains can
-        #    cause webrtcbin to abandon answer creation (we'd see
-        #    "create-answer reply missing 'answer' field"). Doing
-        #    SDP work on the linked-but-idle pipeline gives webrtcbin
+        #    cause webrtcbin to abandon answer creation. Doing SDP
+        #    work on the linked-but-idle pipeline gives webrtcbin
         #    a clean state to negotiate against.
         promise = Gst.Promise.new()
         self.webrtcbin.emit("create-answer", None, promise)
-        promise.wait()
+        wait_res = promise.wait()
+        logger.info("session %s create-answer wait result: %s",
+                    self.id, wait_res)
         reply = promise.get_reply()
         if reply is None:
             raise RuntimeError("create-answer returned no reply")
+        # Surface webrtcbin's actual error if it failed.
+        logger.info("session %s create-answer reply: %s",
+                    self.id, reply.to_string() if reply else None)
+        if reply.has_field("error"):
+            err = reply.get_value("error")
+            raise RuntimeError(f"create-answer error: {err}")
         answer = reply.get_value("answer")
         if answer is None:
-            raise RuntimeError("create-answer reply missing 'answer' field")
+            raise RuntimeError(
+                f"create-answer reply missing 'answer' field; "
+                f"reply contained: {reply.to_string()}")
 
         promise = Gst.Promise.new()
         self.webrtcbin.emit("set-local-description", answer, promise)
