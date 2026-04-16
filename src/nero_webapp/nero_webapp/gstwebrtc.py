@@ -206,11 +206,11 @@ class WebRtcSession:
         self.id = id(self)
         self.pipeline = Gst.Pipeline.new(f"session_{self.id}")
 
-        # Build webrtcbin manually so we can add-transceiver before
-        # the source chains attach. Without a registered transceiver
-        # webrtcbin's sink_%u request pad has no caps to negotiate
-        # against, and the link from rtph264pay fails with
-        # "sender can't handle caps".
+        # Build webrtcbin. We do NOT pre-register transceivers —
+        # webrtcbin will auto-create them from the browser's offer
+        # when set-remote-description runs. As each sink pad becomes
+        # available, the pad-added signal fires and we link the next
+        # waiting chain bin to it (the canonical "answerer" pattern).
         self.webrtcbin = Gst.ElementFactory.make("webrtcbin", "sender")
         if self.webrtcbin is None:
             raise RuntimeError("webrtcbin element not available")
@@ -222,30 +222,18 @@ class WebRtcSession:
         )
         if not self.pipeline.add(self.webrtcbin):
             raise RuntimeError("could not add webrtcbin to pipeline")
-        # Bring webrtcbin to READY before requesting pads — some
-        # GStreamer versions return None from request_pad / .link()
-        # if the element is still in NULL state.
-        if self.webrtcbin.set_state(Gst.State.READY) == Gst.StateChangeReturn.FAILURE:
-            raise RuntimeError("could not bring webrtcbin to READY")
 
         self.sources: List[CameraFeeder] = []
         self.camera_names: List[str] = []
-
-        # H.264 video transceiver caps — same for every camera.
-        caps_str = (
-            "application/x-rtp,media=video,encoding-name=H264,"
-            "payload=96,clock-rate=90000"
-        )
-        rtp_caps = Gst.Caps.from_string(caps_str)
+        # Ordered queue of chains waiting to be linked to a webrtcbin
+        # sink pad. Each entry: (chain_bin, name, feeder).
+        self._pending_chains: List[Tuple[Gst.Bin, str, "CameraFeeder"]] = []
+        self._pending_lock = threading.Lock()
 
         for name, slot in slots_in_order:
             if slot is None:
                 continue
             w, h = _slot_dims(slot)
-
-            # Parse the per-camera chain (appsrc → … → rtph264pay → queue
-            # → caps) into a bin. ghost_unlinked_pads exposes the
-            # final caps's src pad as the bin's src pad.
             chain_desc = camera_chain_desc(name, w, h, fps)
             try:
                 chain_bin = Gst.parse_bin_from_description(chain_desc, True)
@@ -255,54 +243,18 @@ class WebRtcSession:
             if not self.pipeline.add(chain_bin):
                 raise RuntimeError(f"could not add {name} bin to pipeline")
 
-            # Register a sendonly H.264 transceiver up front. This
-            # gives webrtcbin the caps context it needs to accept
-            # the upstream RTP at link time.
-            trans = self.webrtcbin.emit(
-                "add-transceiver",
-                GstWebRTC.WebRTCRTPTransceiverDirection.SENDONLY,
-                rtp_caps,
-            )
-            # Log what webrtcbin's pads look like after add-transceiver
-            # so we can see whether sink_N got created (some versions
-            # delay pad creation until set-remote-description).
-            pad_names = []
-            it = self.webrtcbin.iterate_pads()
-            while True:
-                ok, pad = it.next()
-                if ok != Gst.IteratorResult.OK:
-                    break
-                pad_names.append(
-                    f"{pad.get_name()}({pad.get_direction().value_nick})"
-                )
-            logger.info("%s: after add-transceiver, webrtcbin pads = %s; "
-                        "transceiver = %s", name, pad_names, trans)
-
-            # With the transceiver registered, Element.link() works:
-            # webrtcbin auto-creates a sink_%u request pad and the
-            # caps negotiation succeeds.
-            if not chain_bin.link(self.webrtcbin):
-                # Fall back to explicit pad request if .link() can't
-                # introspect the chain bin's ghost pad.
-                src_pad = chain_bin.get_static_pad("src")
-                sink_pad = None
-                if hasattr(self.webrtcbin, "request_pad_simple"):
-                    sink_pad = self.webrtcbin.request_pad_simple("sink_%u")
-                if sink_pad is None:
-                    sink_pad = self.webrtcbin.get_request_pad("sink_%u")
-                if src_pad is None or sink_pad is None:
-                    raise RuntimeError(
-                        f"{name}: cannot link chain bin to webrtcbin")
-                link_ret = src_pad.link(sink_pad)
-                if link_ret != Gst.PadLinkReturn.OK:
-                    raise RuntimeError(
-                        f"{name}: pad link to webrtcbin returned {link_ret}")
-
             appsrc = chain_bin.get_by_name(f"{name}_src")
             if appsrc is None:
                 raise RuntimeError(f"appsrc {name}_src missing from chain bin")
-            self.sources.append(CameraFeeder(name, slot, appsrc))
+            feeder = CameraFeeder(name, slot, appsrc)
+            self.sources.append(feeder)
             self.camera_names.append(name)
+            self._pending_chains.append((chain_bin, name, feeder))
+
+        # pad-added fires when webrtcbin creates a new pad. For send
+        # transceivers (which is all we have, since the browser offers
+        # recvonly), the new pads are sink pads on webrtcbin.
+        self.webrtcbin.connect("pad-added", self._on_pad_added)
 
         # Threading.Event signalled when ICE gathering reaches COMPLETE
         # so negotiate() can return the final SDP with all candidates.
@@ -321,6 +273,39 @@ class WebRtcSession:
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self._on_bus_message)
+
+    def _on_pad_added(self, _bin, pad):
+        """webrtcbin created a new pad. For send transceivers (all
+        ours are sendonly) the new pad is a sink pad we link our
+        next waiting chain to. Pads appear in the m-line order from
+        the offer, which matches our slots_in_order, so popping
+        FIFO gives the right pairing."""
+        direction = pad.get_direction()
+        pad_name = pad.get_name()
+        logger.debug("session %s pad-added: %s direction=%s",
+                     self.id, pad_name,
+                     direction.value_nick if hasattr(direction, "value_nick")
+                     else direction)
+        if direction != Gst.PadDirection.SINK:
+            return
+        with self._pending_lock:
+            if not self._pending_chains:
+                logger.warning("session %s pad-added %s but no chain "
+                               "waiting", self.id, pad_name)
+                return
+            chain_bin, name, _feeder = self._pending_chains.pop(0)
+        src_pad = chain_bin.get_static_pad("src")
+        if src_pad is None:
+            logger.error("session %s: %s has no src pad to link",
+                         self.id, name)
+            return
+        link_ret = src_pad.link(pad)
+        if link_ret == Gst.PadLinkReturn.OK:
+            logger.info("session %s: linked %s → webrtcbin/%s",
+                        self.id, name, pad_name)
+        else:
+            logger.error("session %s: link %s → %s failed: %s",
+                         self.id, name, pad_name, link_ret)
 
     def _on_ice_gathering_state(self, _wrtc, _pspec):
         state = self.webrtcbin.get_property("ice-gathering-state")
