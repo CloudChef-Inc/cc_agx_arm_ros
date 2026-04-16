@@ -64,7 +64,17 @@ class GravityCompNode(Node):
         self.declare_parameter(
             "kd", [0.5, 0.5, 0.5, 0.3, 0.3, 0.2, 0.1])
         # Maximum torque per joint (N·m). Safety clamp.
-        self.declare_parameter("torque_limit", 5.0)
+        self.declare_parameter("torque_limit", 10.0)
+        # Scale factor for computed gravity torques. The URDF masses
+        # don't include cables/wiring/mounting hardware, and harmonic
+        # drive friction requires extra torque to overcome. Start at
+        # 1.0 (pure model) and increase until the arm floats.
+        self.declare_parameter("gravity_scale", 1.5)
+        # Per-joint static friction compensation (N·m). Applied in
+        # the direction of gravity to help overcome Coulomb friction
+        # in the harmonic drives at standstill.
+        self.declare_parameter(
+            "friction_comp", [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, 0.05])
         # Arm mounting orientation on the torso (roll, pitch, yaw in
         # radians, URDF extrinsic-XYZ convention). The URDF models
         # the arm upright; this rotation transforms the gravity
@@ -82,6 +92,10 @@ class GravityCompNode(Node):
             self.get_parameter("kd").get_parameter_value().double_array_value)
         self.torque_limit = (
             self.get_parameter("torque_limit").get_parameter_value().double_value)
+        self.gravity_scale = (
+            self.get_parameter("gravity_scale").get_parameter_value().double_value)
+        self.friction_comp = list(
+            self.get_parameter("friction_comp").get_parameter_value().double_array_value)
         mount_rpy = list(
             self.get_parameter("mount_rpy").get_parameter_value().double_array_value)
         self.feedback_timeout = (
@@ -200,7 +214,12 @@ class GravityCompNode(Node):
         msg.kd = self.kd[:N_ARM_JOINTS]
         torques = []
         for i in range(N_ARM_JOINTS):
-            t = float(tau_g[self.pin_v_indices[i]])
+            t = float(tau_g[self.pin_v_indices[i]]) * self.gravity_scale
+            # Add static friction compensation in the direction of
+            # the gravity torque (helps overcome harmonic drive
+            # Coulomb friction at standstill).
+            if i < len(self.friction_comp):
+                t += np.sign(t) * self.friction_comp[i] if t != 0 else 0.0
             t = max(-self.torque_limit, min(self.torque_limit, t))
             torques.append(t)
         msg.torque = torques
