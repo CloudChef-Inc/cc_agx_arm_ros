@@ -214,6 +214,30 @@ async function buildArms() {
 
   applyArmPose("left");
   applyArmPose("right");
+
+  // Show base_link coordinate axes on each arm so the user can
+  // identify which axis points "down" for gravity compensation.
+  // RED = +X, GREEN = +Y, BLUE = +Z.
+  for (const side of ["left", "right"]) {
+    const robot = armRobots[side];
+    if (!robot) continue;
+    const axes = new THREE.AxesHelper(0.20);
+    axes.renderOrder = 998;
+    robot.add(axes);
+    // Label each axis tip.
+    const labels = [
+      { text: "+X", color: "#ff3333", pos: [0.22, 0, 0] },
+      { text: "+Y", color: "#33ff33", pos: [0, 0.22, 0] },
+      { text: "+Z", color: "#3366ff", pos: [0, 0, 0.22] },
+    ];
+    for (const { text, color, pos } of labels) {
+      const sprite = makeTextSprite(text, color);
+      sprite.position.set(...pos);
+      sprite.scale.set(0.12, 0.06, 1);
+      sprite.renderOrder = 999;
+      robot.add(sprite);
+    }
+  }
 }
 
 function applyArmPose(side) {
