@@ -99,25 +99,22 @@ def camera_chain_desc(name: str, width: int, height: int, fps: int,
         # GPU-accessible memory. Output format NV12 (semi-planar YUV)
         # is what nvv4l2h264enc expects.
         f"! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 "
-        # NVENC. preset-level=1 is "UltraFastPreset" → minimum latency,
-        # which is what we want for teleop. control-rate=1 = constant
-        # bitrate. (Property names like "maxperf-enable" vary across
-        # L4T releases — keep the set minimal and portable.)
+        # NVENC. Property set kept minimal so it works across the
+        # nvv4l2h264enc variants on different L4T releases — only
+        # bitrate and iframeinterval are universally supported.
         f"! nvv4l2h264enc name={name}_enc "
-        f"    preset-level=1 insert-sps-pps=true "
         f"    iframeinterval={iframe_interval} bitrate={bitrate_kbps * 1000} "
-        f"    control-rate=1 "
-        # Force baseline profile — the most universally decodable
-        # H.264 variant in browsers, and skips B-frames (zero reorder
-        # delay at the decoder).
-        f"! video/x-h264,profile=baseline "
         # Repeat SPS/PPS in-band so a late-joining decoder can sync.
         f"! h264parse config-interval=-1 "
         # RTP packetiser. zero-latency aggregation = send packets
-        # immediately, don't bundle multiple frames.
+        # immediately, don't bundle multiple frames. Wrap the trailing
+        # RTP caps in an explicit capsfilter — gst's parse_bin_from_
+        # description treats `application/x-rtp,…` as an element name
+        # otherwise (the `application/` prefix isn't auto-detected as
+        # a media type the way `video/…` is).
         f"! rtph264pay name={name}_pay pt=96 config-interval=1 "
         f"    aggregate-mode=zero-latency "
-        f"! application/x-rtp,media=video,encoding-name=H264,payload=96"
+        f"! capsfilter caps=application/x-rtp,media=video,encoding-name=H264,payload=96"
     )
 
 
