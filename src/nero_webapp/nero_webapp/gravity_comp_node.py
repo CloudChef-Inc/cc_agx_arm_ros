@@ -75,14 +75,13 @@ class GravityCompNode(Node):
         # in the harmonic drives at standstill.
         self.declare_parameter(
             "friction_comp", [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, 0.05])
-        # Arm mounting orientation on the torso (roll, pitch, yaw in
-        # radians, URDF extrinsic-XYZ convention). The URDF models
-        # the arm upright; this rotation transforms the gravity
-        # vector into the arm's base frame.
-        # From two_nero.urdf.xacro: right = pi/2 0 0, left = -pi/2 0 0.
         side = self.get_parameter("side").get_parameter_value().string_value
-        default_rpy = [1.5708, 0.0, 0.0] if side == "right" else [-1.5708, 0.0, 0.0]
-        self.declare_parameter("mount_rpy", default_rpy)
+        # Gravity vector in the arm's base_link frame [gx, gy, gz].
+        # Set this by physical observation: which direction does
+        # gravity pull in the arm's own coordinate frame?
+        # For the Nero URDF: Z = along chain, X and Y perpendicular.
+        # Default [-9.81, 0, 0] = gravity along arm's -X axis.
+        self.declare_parameter("gravity_vector", [-9.81, 0.0, 0.0])
         # Stale-data timeout: if we haven't received feedback in this
         # many seconds, stop sending torques (safety).
         self.declare_parameter("feedback_timeout", 0.1)
@@ -96,8 +95,8 @@ class GravityCompNode(Node):
             self.get_parameter("gravity_scale").get_parameter_value().double_value)
         self.friction_comp = list(
             self.get_parameter("friction_comp").get_parameter_value().double_array_value)
-        mount_rpy = list(
-            self.get_parameter("mount_rpy").get_parameter_value().double_array_value)
+        gravity_vec = list(
+            self.get_parameter("gravity_vector").get_parameter_value().double_array_value)
         self.feedback_timeout = (
             self.get_parameter("feedback_timeout").get_parameter_value().double_value)
 
@@ -112,11 +111,12 @@ class GravityCompNode(Node):
             f"Pinocchio model loaded: nq={self.model.nq} nv={self.model.nv} "
             f"njoints={self.model.njoints}")
 
-        # Transform gravity into the arm's base frame. The URDF's
-        # base_link frame has Z pointing along the arm chain — but the
-        # arm is mounted on the torso with a rotation, so world gravity
-        # (-Z) isn't along the arm's -Z.
-        self._set_gravity_from_mount(mount_rpy)
+        # Set gravity directly in the arm's base frame.
+        g = np.array(gravity_vec, dtype=float)
+        self.model.gravity = pin.Motion(
+            np.concatenate([g, [0.0, 0.0, 0.0]]))
+        self.get_logger().info(
+            f"Gravity in arm frame: [{g[0]:.3f}, {g[1]:.3f}, {g[2]:.3f}] m/s²")
 
         # Map arm joint names → Pinocchio model indices.
         self.pin_q_indices: List[int] = []
@@ -156,22 +156,6 @@ class GravityCompNode(Node):
         self.get_logger().info(
             f"Gravity comp for {side} arm at {rate} Hz — "
             f"DISABLED (set 'enabled' param to true to activate)")
-
-    def _set_gravity_from_mount(self, rpy: List[float]) -> None:
-        """Transform world gravity [0, 0, -9.81] into the arm's base
-        frame using the mount RPY, and write it into the Pinocchio
-        model's gravity field."""
-        from scipy.spatial.transform import Rotation as R
-        # URDF RPY is extrinsic XYZ (fixed-axis): R = Rz(yaw) @ Ry(pitch) @ Rx(roll).
-        # scipy's uppercase "XYZ" matches this convention.
-        rot = R.from_euler("XYZ", rpy)
-        g_world = np.array([0.0, 0.0, -9.81])
-        g_arm = rot.inv().apply(g_world)
-        self.model.gravity = pin.Motion(
-            np.concatenate([g_arm, [0.0, 0.0, 0.0]]))
-        self.get_logger().info(
-            f"Gravity in arm frame: [{g_arm[0]:.3f}, {g_arm[1]:.3f}, "
-            f"{g_arm[2]:.3f}] m/s²")
 
     def _on_param_change(self, params):
         from rcl_interfaces.msg import SetParametersResult
