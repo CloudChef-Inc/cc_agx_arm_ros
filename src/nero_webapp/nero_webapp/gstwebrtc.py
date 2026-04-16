@@ -107,14 +107,17 @@ def camera_chain_desc(name: str, width: int, height: int, fps: int,
         # Repeat SPS/PPS in-band so a late-joining decoder can sync.
         f"! h264parse config-interval=-1 "
         # RTP packetiser. zero-latency aggregation = send packets
-        # immediately, don't bundle multiple frames. Wrap the trailing
-        # RTP caps in an explicit capsfilter — gst's parse_bin_from_
-        # description treats `application/x-rtp,…` as an element name
-        # otherwise (the `application/` prefix isn't auto-detected as
-        # a media type the way `video/…` is).
+        # immediately, don't bundle multiple frames.
         f"! rtph264pay name={name}_pay pt=96 config-interval=1 "
         f"    aggregate-mode=zero-latency "
-        f"! capsfilter caps=application/x-rtp,media=video,encoding-name=H264,payload=96"
+        # Inline caps spec — gst_parse_launch (the full-pipeline
+        # parser) handles application/x-rtp here correctly. The
+        # explicit `capsfilter` element form ran into a link-to-
+        # webrtcbin failure (parse error code 3); inline caps create
+        # an anonymous capsfilter that the parser DOES link properly
+        # to webrtcbin's sink_%u request pad via the trailing
+        # `! sender.` idiom.
+        f"! application/x-rtp,media=video,encoding-name=H264,payload=96"
     )
 
 
