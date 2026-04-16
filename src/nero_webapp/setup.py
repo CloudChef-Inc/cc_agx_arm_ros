@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "webapp_node = nero_webapp.webapp_node:main",
+            "gravity_comp = nero_webapp.gravity_comp_node:main",
         ],
     },
 )
