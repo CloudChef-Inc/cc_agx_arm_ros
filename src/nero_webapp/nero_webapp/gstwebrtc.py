@@ -354,15 +354,13 @@ class WebRtcSession:
         self.webrtcbin.emit("set-remote-description", offer, promise)
         promise.wait()
 
-        # 2. start the pipeline so encoders begin running and ICE
-        #    candidates start being gathered.
-        rc = self.pipeline.set_state(Gst.State.PLAYING)
-        if rc == Gst.StateChangeReturn.FAILURE:
-            raise RuntimeError("pipeline failed to enter PLAYING")
-        for src in self.sources:
-            src.start()
-
-        # 3. create answer
+        # 2. create answer + set local description BEFORE starting
+        #    feeders. If feeders push data while create-answer is
+        #    in flight, downstream errors / EOS on the chains can
+        #    cause webrtcbin to abandon answer creation (we'd see
+        #    "create-answer reply missing 'answer' field"). Doing
+        #    SDP work on the linked-but-idle pipeline gives webrtcbin
+        #    a clean state to negotiate against.
         promise = Gst.Promise.new()
         self.webrtcbin.emit("create-answer", None, promise)
         promise.wait()
@@ -373,13 +371,22 @@ class WebRtcSession:
         if answer is None:
             raise RuntimeError("create-answer reply missing 'answer' field")
 
-        # 4. set local description (answer)
         promise = Gst.Promise.new()
         self.webrtcbin.emit("set-local-description", answer, promise)
         promise.wait()
 
-        # 5. wait for ICE gathering to complete (vanilla ICE; no
-        #    trickle to the browser to keep the wire protocol simple).
+        # 3. NOW move the pipeline to PLAYING and start the feeders.
+        #    set-local-description triggers ICE gathering — for that
+        #    to complete the pipeline needs to be active.
+        rc = self.pipeline.set_state(Gst.State.PLAYING)
+        if rc == Gst.StateChangeReturn.FAILURE:
+            raise RuntimeError("pipeline failed to enter PLAYING")
+        for src in self.sources:
+            src.start()
+
+        # 4. wait for ICE gathering (vanilla ICE; no trickle to keep
+        #    the wire protocol simple — the answer SDP we return
+        #    includes all candidates).
         if not self._ice_done.wait(timeout=8.0):
             logger.warning("session %s: ICE gathering timed out at 8s, "
                            "returning SDP with whatever candidates we have",
