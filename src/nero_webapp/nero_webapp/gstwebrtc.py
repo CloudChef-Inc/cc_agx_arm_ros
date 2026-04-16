@@ -110,14 +110,12 @@ def camera_chain_desc(name: str, width: int, height: int, fps: int,
         # immediately, don't bundle multiple frames.
         f"! rtph264pay name={name}_pay pt=96 config-interval=1 "
         f"    aggregate-mode=zero-latency "
-        # Inline caps spec — gst_parse_launch (the full-pipeline
-        # parser) handles application/x-rtp here correctly. The
-        # explicit `capsfilter` element form ran into a link-to-
-        # webrtcbin failure (parse error code 3); inline caps create
-        # an anonymous capsfilter that the parser DOES link properly
-        # to webrtcbin's sink_%u request pad via the trailing
-        # `! sender.` idiom.
-        f"! application/x-rtp,media=video,encoding-name=H264,payload=96"
+        # Queue + caps right before linking to webrtcbin matches the
+        # canonical layout in GStreamer's gst-webrtc demos. The
+        # caps include clock-rate=90000 (the standard H.264 RTP
+        # timebase) — webrtcbin rejected the caps without it.
+        f"! queue "
+        f"! application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000"
     )
 
 
