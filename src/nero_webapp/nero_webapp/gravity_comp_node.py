@@ -147,6 +147,10 @@ class GravityCompNode(Node):
             self._on_feedback, qos)
         self._pub = self.create_publisher(
             MoveMITMsg, f"/{side}/control/move_mit", qos)
+        # Position command publisher — used to re-engage the position
+        # controller when gravity comp is disabled.
+        self._pos_pub = self.create_publisher(
+            JointState, f"/{side}/control/joint_states", qos)
 
         self.create_timer(1.0 / rate, self._control_tick)
 
@@ -165,7 +169,22 @@ class GravityCompNode(Node):
                 self.get_logger().info(
                     f"gravity comp: {'ENABLED' if p.value else 'DISABLED'} "
                     f"(was {'enabled' if was else 'disabled'})")
+                if was and not p.value:
+                    self._reengage_position_hold()
         return SetParametersResult(successful=True)
+
+    def _reengage_position_hold(self) -> None:
+        """Send a position command with current joint positions to
+        switch the firmware back from MIT mode to position-hold."""
+        with self._q_lock:
+            q = self._q.copy()
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = list(ARM_JOINT_NAMES)
+        msg.position = [float(q[self.pin_q_indices[i]])
+                        for i in range(N_ARM_JOINTS)]
+        self._pos_pub.publish(msg)
+        self.get_logger().info("re-engaged position hold at current pose")
 
     def _on_feedback(self, msg: JointState) -> None:
         by_name = dict(zip(msg.name, msg.position))
