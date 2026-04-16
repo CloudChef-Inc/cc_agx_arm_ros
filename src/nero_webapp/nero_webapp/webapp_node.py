@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 from ament_index_python.packages import get_package_share_directory
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 
 # pika_sdk is optional — absence just means gripper control is unavailable.
 try:
