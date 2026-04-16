@@ -255,13 +255,16 @@ class WebRtcSession:
             if not self.pipeline.add(chain_bin):
                 raise RuntimeError(f"could not add {name} bin to pipeline")
 
-            # Request a sink pad on webrtcbin with our exact RTP
-            # caps — the modern Gst.Element.request_pad(template,
-            # name, caps) signature. Passing the caps tells
-            # webrtcbin to set up a sender transceiver matching them
-            # and gives us back the pad in one call.
+            # Request a sink pad on webrtcbin WITHOUT pinning caps.
+            # Pinning caps locks the transceiver to a specific
+            # codec/profile-level-id, and if that exact combo isn't
+            # in the browser's offer, set-remote-description silently
+            # rejects all m-lines (signaling-state stays at stable
+            # instead of moving to have-remote-offer). Passing None
+            # for caps lets webrtcbin pick whichever codec from the
+            # offer matches what's downstream (rtph264pay → H.264).
             sink_pad = self.webrtcbin.request_pad(
-                sink_template, None, rtp_caps,
+                sink_template, None, None,
             )
             if sink_pad is None:
                 raise RuntimeError(
