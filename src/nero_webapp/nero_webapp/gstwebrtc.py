@@ -244,14 +244,30 @@ class WebRtcSession:
             bin_ = src.build()
             if not self.pipeline.add(bin_):
                 raise RuntimeError(f"could not add {name} bin")
-            # Link the source bin to webrtcbin. Calling .link() on a
-            # bin to webrtcbin auto-requests a sink_%u pad on
-            # webrtcbin and connects to it — this is the supported
-            # path in modern GStreamer (the old explicit
-            # get_request_pad("sink_%u") doesn't auto-resolve %u and
-            # returns None).
-            if not bin_.link(self.webrtcbin):
-                raise RuntimeError(f"link {name} → webrtcbin failed")
+            # Get the bin's ghost src pad (created by parse_bin with
+            # ghost_unlinked_pads=True; it wraps the rtph264pay's
+            # capsfilter src).
+            src_pad = bin_.get_static_pad("src")
+            if src_pad is None:
+                raise RuntimeError(f"{name}: no ghost src pad on bin")
+            # Request a sink pad on webrtcbin. Try the modern API
+            # name first (request_pad_simple, GStreamer 1.20+); fall
+            # back to the older get_request_pad if that's all this
+            # binding has.
+            sink_pad = None
+            if hasattr(self.webrtcbin, "request_pad_simple"):
+                sink_pad = self.webrtcbin.request_pad_simple("sink_%u")
+            if sink_pad is None:
+                # Try with explicit numbered template via the older API.
+                idx = len(self.sources)
+                sink_pad = self.webrtcbin.get_request_pad(f"sink_{idx}")
+            if sink_pad is None:
+                raise RuntimeError(
+                    f"{name}: webrtcbin would not provide a sink pad")
+            link_ret = src_pad.link(sink_pad)
+            if link_ret != Gst.PadLinkReturn.OK:
+                raise RuntimeError(
+                    f"{name}: pad link to webrtcbin returned {link_ret}")
             self.sources.append(src)
             self.camera_names.append(name)
 
