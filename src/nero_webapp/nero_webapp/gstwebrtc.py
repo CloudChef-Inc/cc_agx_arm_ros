@@ -203,44 +203,84 @@ class WebRtcSession:
     def __init__(self, slots_in_order: List[Tuple[str, LatestFrame]],
                  fps: int = 30):
         self.id = id(self)
+        self.pipeline = Gst.Pipeline.new(f"session_{self.id}")
 
-        camera_specs: List[Tuple[str, LatestFrame]] = []
-        chain_strs: List[str] = []
+        # Build webrtcbin manually so we can add-transceiver before
+        # the source chains attach. Without a registered transceiver
+        # webrtcbin's sink_%u request pad has no caps to negotiate
+        # against, and the link from rtph264pay fails with
+        # "sender can't handle caps".
+        self.webrtcbin = Gst.ElementFactory.make("webrtcbin", "sender")
+        if self.webrtcbin is None:
+            raise RuntimeError("webrtcbin element not available")
+        self.webrtcbin.set_property(
+            "bundle-policy", GstWebRTC.WebRTCBundlePolicy.MAX_BUNDLE,
+        )
+        self.webrtcbin.set_property(
+            "stun-server", "stun://stun.l.google.com:19302",
+        )
+        if not self.pipeline.add(self.webrtcbin):
+            raise RuntimeError("could not add webrtcbin to pipeline")
+
+        self.sources: List[CameraFeeder] = []
+        self.camera_names: List[str] = []
+
+        # H.264 video transceiver caps — same for every camera.
+        caps_str = (
+            "application/x-rtp,media=video,encoding-name=H264,"
+            "payload=96,clock-rate=90000"
+        )
+        rtp_caps = Gst.Caps.from_string(caps_str)
+
         for name, slot in slots_in_order:
             if slot is None:
                 continue
             w, h = _slot_dims(slot)
-            # The trailing `! sender.` links this chain's last element
-            # (the rtp capsfilter) to the next available request pad
-            # on the webrtcbin element named `sender`.
-            chain_strs.append(camera_chain_desc(name, w, h, fps) + " ! sender.")
-            camera_specs.append((name, slot))
 
-        if not chain_strs:
-            raise RuntimeError("no enabled cameras to publish")
+            # Parse the per-camera chain (appsrc → … → rtph264pay → queue
+            # → caps) into a bin. ghost_unlinked_pads exposes the
+            # final caps's src pad as the bin's src pad.
+            chain_desc = camera_chain_desc(name, w, h, fps)
+            try:
+                chain_bin = Gst.parse_bin_from_description(chain_desc, True)
+            except GLib.GError as e:
+                raise RuntimeError(f"chain {name} parse failed: {e.message}")
+            chain_bin.set_property("name", f"{name}_bin")
+            if not self.pipeline.add(chain_bin):
+                raise RuntimeError(f"could not add {name} bin to pipeline")
 
-        full_desc = (
-            "webrtcbin name=sender "
-            "bundle-policy=max-bundle "
-            "stun-server=stun://stun.l.google.com:19302 " +
-            " ".join(chain_strs)
-        )
-        try:
-            self.pipeline = Gst.parse_launch(full_desc)
-        except GLib.GError as e:
-            raise RuntimeError(f"pipeline parse failed: {e.message}")
+            # Tell webrtcbin to expect a sendonly H.264 video track.
+            # add-transceiver creates the transceiver AND gives us a
+            # sink_%u pad we can link our bin's src pad to.
+            self.webrtcbin.emit(
+                "add-transceiver",
+                GstWebRTC.WebRTCRTPTransceiverDirection.SENDONLY,
+                rtp_caps,
+            )
 
-        self.webrtcbin = self.pipeline.get_by_name("sender")
-        if self.webrtcbin is None:
-            raise RuntimeError("webrtcbin 'sender' missing from parsed pipeline")
+            # After add-transceiver, webrtcbin has a sink_N pad
+            # (auto-numbered, N == position in transceiver list).
+            idx = len(self.sources)
+            sink_pad = self.webrtcbin.get_static_pad(f"sink_{idx}")
+            if sink_pad is None:
+                # Some bindings need an explicit request — try both.
+                if hasattr(self.webrtcbin, "request_pad_simple"):
+                    sink_pad = self.webrtcbin.request_pad_simple("sink_%u")
+            if sink_pad is None:
+                raise RuntimeError(
+                    f"{name}: no sink pad on webrtcbin after add-transceiver")
 
-        # Wrap each appsrc in a feeder.
-        self.sources: List[CameraFeeder] = []
-        self.camera_names: List[str] = []
-        for name, slot in camera_specs:
-            appsrc = self.pipeline.get_by_name(f"{name}_src")
+            src_pad = chain_bin.get_static_pad("src")
+            if src_pad is None:
+                raise RuntimeError(f"{name}: no ghost src pad on chain bin")
+            link_ret = src_pad.link(sink_pad)
+            if link_ret != Gst.PadLinkReturn.OK:
+                raise RuntimeError(
+                    f"{name}: pad link to webrtcbin returned {link_ret}")
+
+            appsrc = chain_bin.get_by_name(f"{name}_src")
             if appsrc is None:
-                raise RuntimeError(f"appsrc {name}_src missing from pipeline")
+                raise RuntimeError(f"appsrc {name}_src missing from chain bin")
             self.sources.append(CameraFeeder(name, slot, appsrc))
             self.camera_names.append(name)
 
