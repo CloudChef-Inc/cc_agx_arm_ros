@@ -145,6 +145,34 @@ def generate_launch_description() -> LaunchDescription:
         }],
     )
 
+    # Gravity compensation nodes (one per arm). Start DISABLED —
+    # the webapp's Float button toggles them via parameter service.
+    nero_urdf = PathJoinSubstitution([
+        FindPackageShare("nero_webapp"), "static", "nero_with_gripper.urdf",
+    ])
+    gravity_comp_left = Node(
+        package="nero_webapp",
+        executable="gravity_comp",
+        name="gravity_comp_left",
+        output="screen",
+        parameters=[{
+            "side": "left",
+            "urdf_path": nero_urdf,
+            "gravity_vector": [-9.81, 0.0, 0.0],
+        }],
+    )
+    gravity_comp_right = Node(
+        package="nero_webapp",
+        executable="gravity_comp",
+        name="gravity_comp_right",
+        output="screen",
+        parameters=[{
+            "side": "right",
+            "urdf_path": nero_urdf,
+            "gravity_vector": [-9.81, 0.0, 0.0],
+        }],
+    )
+
     return LaunchDescription([
         left_can_arg,
         right_can_arg,
@@ -160,4 +188,6 @@ def generate_launch_description() -> LaunchDescription:
         left_arm,
         right_arm,
         webapp_node,
+        gravity_comp_left,
+        gravity_comp_right,
     ])
