@@ -70,13 +70,12 @@ class GravityCompNode(Node):
         # the arm upright; this rotation transforms the gravity
         # vector into the arm's base frame.
         # From two_nero.urdf.xacro: right = pi/2 0 0, left = -pi/2 0 0.
+        side = self.get_parameter("side").get_parameter_value().string_value
         default_rpy = [1.5708, 0.0, 0.0] if side == "right" else [-1.5708, 0.0, 0.0]
         self.declare_parameter("mount_rpy", default_rpy)
         # Stale-data timeout: if we haven't received feedback in this
         # many seconds, stop sending torques (safety).
         self.declare_parameter("feedback_timeout", 0.1)
-
-        side = self.get_parameter("side").get_parameter_value().string_value
         urdf_path = self.get_parameter("urdf_path").get_parameter_value().string_value
         rate = self.get_parameter("rate").get_parameter_value().double_value
         self.kd = list(
