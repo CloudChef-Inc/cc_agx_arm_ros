@@ -466,9 +466,13 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
         req.parameters = [p]
 
         future = client.call_async(req)
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: rclpy.spin_until_future_complete(node, future, timeout_sec=2.0)
-        )
+        # Poll until done — can't use spin_until_future_complete
+        # because the node is already spinning on a background thread.
+        deadline = time.time() + 2.0
+        while not future.done() and time.time() < deadline:
+            await asyncio.sleep(0.05)
+        if not future.done():
+            return {"ok": False, "error": "parameter set timed out"}
         resp = future.result()
         if resp and resp.results and resp.results[0].successful:
             return {"ok": True, "side": side, "enabled": enabled}
