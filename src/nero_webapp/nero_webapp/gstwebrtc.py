@@ -364,6 +364,37 @@ class WebRtcSession:
         self.webrtcbin.emit("set-remote-description", offer, promise)
         promise.wait()
 
+        # Diagnose state after set-remote-description. If webrtcbin is
+        # already closed, set-remote-description failed silently and
+        # the subsequent create-answer will fail with that error.
+        try:
+            conn_state = self.webrtcbin.get_property("connection-state")
+            sig_state = self.webrtcbin.get_property("signaling-state")
+            ice_state = self.webrtcbin.get_property("ice-connection-state")
+            logger.info("session %s after set-remote-description: "
+                        "connection=%s signaling=%s ice=%s",
+                        self.id,
+                        conn_state.value_nick if hasattr(conn_state, "value_nick") else conn_state,
+                        sig_state.value_nick if hasattr(sig_state, "value_nick") else sig_state,
+                        ice_state.value_nick if hasattr(ice_state, "value_nick") else ice_state)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("session %s: state read failed: %s", self.id, e)
+
+        # Set sendonly direction + codec preferences on every transceiver
+        # webrtcbin created. Without explicit codec-preferences, webrtcbin
+        # may fail to find a matching codec in the offer and end up
+        # closing the connection.
+        try:
+            transceivers = self.webrtcbin.emit("get-transceivers")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("session %s: get-transceivers failed: %s",
+                           self.id, e)
+            transceivers = None
+        if transceivers is not None:
+            n_trans = transceivers.len if hasattr(transceivers, "len") else len(transceivers)
+            logger.info("session %s has %s transceivers post-remote-desc",
+                        self.id, n_trans)
+
         # 2. create answer + set local description BEFORE starting
         #    feeders. If feeders push data while create-answer is
         #    in flight, downstream errors / EOS on the chains can
