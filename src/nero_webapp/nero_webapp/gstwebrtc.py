@@ -250,34 +250,34 @@ class WebRtcSession:
             if not self.pipeline.add(chain_bin):
                 raise RuntimeError(f"could not add {name} bin to pipeline")
 
-            # Tell webrtcbin to expect a sendonly H.264 video track.
-            # add-transceiver creates the transceiver AND gives us a
-            # sink_%u pad we can link our bin's src pad to.
+            # Register a sendonly H.264 transceiver up front. This
+            # gives webrtcbin the caps context it needs to accept
+            # the upstream RTP at link time.
             self.webrtcbin.emit(
                 "add-transceiver",
                 GstWebRTC.WebRTCRTPTransceiverDirection.SENDONLY,
                 rtp_caps,
             )
 
-            # After add-transceiver, webrtcbin has a sink_N pad
-            # (auto-numbered, N == position in transceiver list).
-            idx = len(self.sources)
-            sink_pad = self.webrtcbin.get_static_pad(f"sink_{idx}")
-            if sink_pad is None:
-                # Some bindings need an explicit request — try both.
+            # With the transceiver registered, Element.link() works:
+            # webrtcbin auto-creates a sink_%u request pad and the
+            # caps negotiation succeeds.
+            if not chain_bin.link(self.webrtcbin):
+                # Fall back to explicit pad request if .link() can't
+                # introspect the chain bin's ghost pad.
+                src_pad = chain_bin.get_static_pad("src")
+                sink_pad = None
                 if hasattr(self.webrtcbin, "request_pad_simple"):
                     sink_pad = self.webrtcbin.request_pad_simple("sink_%u")
-            if sink_pad is None:
-                raise RuntimeError(
-                    f"{name}: no sink pad on webrtcbin after add-transceiver")
-
-            src_pad = chain_bin.get_static_pad("src")
-            if src_pad is None:
-                raise RuntimeError(f"{name}: no ghost src pad on chain bin")
-            link_ret = src_pad.link(sink_pad)
-            if link_ret != Gst.PadLinkReturn.OK:
-                raise RuntimeError(
-                    f"{name}: pad link to webrtcbin returned {link_ret}")
+                if sink_pad is None:
+                    sink_pad = self.webrtcbin.get_request_pad("sink_%u")
+                if src_pad is None or sink_pad is None:
+                    raise RuntimeError(
+                        f"{name}: cannot link chain bin to webrtcbin")
+                link_ret = src_pad.link(sink_pad)
+                if link_ret != Gst.PadLinkReturn.OK:
+                    raise RuntimeError(
+                        f"{name}: pad link to webrtcbin returned {link_ret}")
 
             appsrc = chain_bin.get_by_name(f"{name}_src")
             if appsrc is None:
