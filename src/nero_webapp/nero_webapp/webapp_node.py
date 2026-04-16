@@ -52,12 +52,7 @@ from sensor_msgs.msg import JointState
 import uvicorn
 
 from .cameras import FisheyeCamera, RealSenseCamera
-# GStreamer + NVENC backend. Encode happens on dedicated Tegra
-# hardware so we can run all 6 streams without saturating the CPU
-# (the previous aiortc/libx264 backend topped out around 2 streams
-# at 720p before encoder backpressure caused the browser to see
-# near-zero fps). Browser-facing protocol is unchanged.
-from .gstwebrtc import setup_webrtc_routes
+from .webrtc import setup_webrtc_routes
 
 
 # Default Nero joint names (7 revolute + gripper). Match nero_description.urdf.
@@ -98,9 +93,9 @@ class WebappNode(Node):
         self.declare_parameter("right_fisheye_device", "")
         # Shared fisheye config — both sides use identical resolution/
         # fps/exposure/crop for a consistent UI.
-        self.declare_parameter("fisheye_width",  1280)
-        self.declare_parameter("fisheye_height", 720)
-        self.declare_parameter("fisheye_fps",    30)
+        self.declare_parameter("fisheye_width",  640)
+        self.declare_parameter("fisheye_height", 480)
+        self.declare_parameter("fisheye_fps",    15)
         self.declare_parameter("fisheye_circle_crop", True)
         self.declare_parameter("fisheye_exposure", 200)
         # Per-side RealSense D405 serials. If empty, fall back to
@@ -109,11 +104,13 @@ class WebappNode(Node):
         # webapp picks it up without duplicating config.
         self.declare_parameter("left_realsense_serial",  "")
         self.declare_parameter("right_realsense_serial", "")
-        self.declare_parameter("realsense_color_w", 1280)
-        self.declare_parameter("realsense_color_h", 720)
-        self.declare_parameter("realsense_depth_w", 1280)
-        self.declare_parameter("realsense_depth_h", 720)
-        self.declare_parameter("realsense_fps",     30)
+        # 848×480 @ 15fps for RealSense — keeps total sw-encode
+        # load manageable with 6 streams on aiortc/libx264.
+        self.declare_parameter("realsense_color_w", 848)
+        self.declare_parameter("realsense_color_h", 480)
+        self.declare_parameter("realsense_depth_w", 848)
+        self.declare_parameter("realsense_depth_h", 480)
+        self.declare_parameter("realsense_fps",     15)
 
         self.joint_names: List[str] = (
             self.get_parameter("joint_names").get_parameter_value().string_array_value
