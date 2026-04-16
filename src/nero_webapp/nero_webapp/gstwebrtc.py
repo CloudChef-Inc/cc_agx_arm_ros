@@ -222,6 +222,11 @@ class WebRtcSession:
         )
         if not self.pipeline.add(self.webrtcbin):
             raise RuntimeError("could not add webrtcbin to pipeline")
+        # Bring webrtcbin to READY before requesting pads — some
+        # GStreamer versions return None from request_pad / .link()
+        # if the element is still in NULL state.
+        if self.webrtcbin.set_state(Gst.State.READY) == Gst.StateChangeReturn.FAILURE:
+            raise RuntimeError("could not bring webrtcbin to READY")
 
         self.sources: List[CameraFeeder] = []
         self.camera_names: List[str] = []
@@ -253,11 +258,25 @@ class WebRtcSession:
             # Register a sendonly H.264 transceiver up front. This
             # gives webrtcbin the caps context it needs to accept
             # the upstream RTP at link time.
-            self.webrtcbin.emit(
+            trans = self.webrtcbin.emit(
                 "add-transceiver",
                 GstWebRTC.WebRTCRTPTransceiverDirection.SENDONLY,
                 rtp_caps,
             )
+            # Log what webrtcbin's pads look like after add-transceiver
+            # so we can see whether sink_N got created (some versions
+            # delay pad creation until set-remote-description).
+            pad_names = []
+            it = self.webrtcbin.iterate_pads()
+            while True:
+                ok, pad = it.next()
+                if ok != Gst.IteratorResult.OK:
+                    break
+                pad_names.append(
+                    f"{pad.get_name()}({pad.get_direction().value_nick})"
+                )
+            logger.info("%s: after add-transceiver, webrtcbin pads = %s; "
+                        "transceiver = %s", name, pad_names, trans)
 
             # With the transceiver registered, Element.link() works:
             # webrtcbin auto-creates a sink_%u request pad and the
