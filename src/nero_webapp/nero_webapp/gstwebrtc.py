@@ -365,7 +365,14 @@ class WebRtcSession:
         # 1. set remote description (offer)
         promise = Gst.Promise.new()
         self.webrtcbin.emit("set-remote-description", offer, promise)
-        promise.wait()
+        srd_wait = promise.wait()
+        srd_reply = promise.get_reply()
+        logger.info("session %s set-remote-description wait=%s reply=%s",
+                    self.id, srd_wait,
+                    srd_reply.to_string() if srd_reply else None)
+        if srd_reply is not None and srd_reply.has_field("error"):
+            err = srd_reply.get_value("error")
+            raise RuntimeError(f"set-remote-description error: {err}")
 
         # Diagnose state after set-remote-description. If webrtcbin is
         # already closed, set-remote-description failed silently and
