@@ -101,11 +101,12 @@ def camera_chain_desc(name: str, width: int, height: int, fps: int,
         f"! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 "
         # NVENC. preset-level=1 is "UltraFastPreset" → minimum latency,
         # which is what we want for teleop. control-rate=1 = constant
-        # bitrate. maxperf-enable=true unlocks max clock for the encoder.
+        # bitrate. (Property names like "maxperf-enable" vary across
+        # L4T releases — keep the set minimal and portable.)
         f"! nvv4l2h264enc name={name}_enc "
         f"    preset-level=1 insert-sps-pps=true "
         f"    iframeinterval={iframe_interval} bitrate={bitrate_kbps * 1000} "
-        f"    control-rate=1 maxperf-enable=true "
+        f"    control-rate=1 "
         # Force baseline profile — the most universally decodable
         # H.264 variant in browsers, and skips B-frames (zero reorder
         # delay at the decoder).
