@@ -99,10 +99,11 @@ def camera_chain_desc(name: str, width: int, height: int, fps: int,
         # GPU-accessible memory. Output format NV12 (semi-planar YUV)
         # is what nvv4l2h264enc expects.
         f"! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 "
-        # NVENC. Property set kept minimal so it works across the
-        # nvv4l2h264enc variants on different L4T releases — only
-        # bitrate and iframeinterval are universally supported.
-        f"! nvv4l2h264enc name={name}_enc "
+        # NVENC. profile=0 = Baseline (matches our negotiated
+        # profile-level-id=42e01f / constrained-baseline). Other
+        # property names are kept minimal so it works across the
+        # nvv4l2h264enc variants on different L4T releases.
+        f"! nvv4l2h264enc name={name}_enc profile=0 "
         f"    iframeinterval={iframe_interval} bitrate={bitrate_kbps * 1000} "
         # Repeat SPS/PPS in-band so a late-joining decoder can sync.
         f"! h264parse config-interval=-1 "
@@ -229,12 +230,15 @@ class WebRtcSession:
         if sink_template is None:
             raise RuntimeError("webrtcbin has no sink_%u pad template")
 
-        # Don't pin a specific payload type — browsers use different
-        # PT numbers for H.264 (Chrome 102, Firefox 96, etc.) and
-        # webrtcbin's create-answer needs to find a match against the
-        # offer. clock-rate is the only mandatory non-codec field.
+        # H.264 transceiver caps with the constrained-baseline
+        # profile-level-id (42e01f) at packetization-mode=1. Both
+        # widely supported by browsers and what NVENC outputs by
+        # default. Without a profile-level-id, webrtcbin's
+        # create-answer can't find a match in the offer's H.264
+        # m-line and silently drops the answer.
         rtp_caps = Gst.Caps.from_string(
-            "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000"
+            "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,"
+            "profile-level-id=(string)42e01f,packetization-mode=(string)1"
         )
 
         self.sources: List[CameraFeeder] = []
