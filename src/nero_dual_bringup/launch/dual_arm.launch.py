@@ -80,6 +80,12 @@ def generate_launch_description() -> LaunchDescription:
                     "= fall back to /etc/nero/d405_sides.conf).",
     )
 
+    # ZedBox body tracking streamer (TCP client in webapp connects here).
+    zedbox_host_arg = DeclareLaunchArgument(
+        "zedbox_host", default_value="",
+        description="ZedBox hostname/IP for skeleton streaming (empty = disabled).",
+    )
+
     # Torso dimensions — single source of truth. Flows to both the
     # xacro (URDF model) and the webapp (3D rendering).
     torso_width_arg = DeclareLaunchArgument(
@@ -162,6 +168,7 @@ def generate_launch_description() -> LaunchDescription:
             "right_fisheye_device":   LaunchConfiguration("right_fisheye_device"),
             "left_realsense_serial":  LaunchConfiguration("left_realsense_serial"),
             "right_realsense_serial": LaunchConfiguration("right_realsense_serial"),
+            "zedbox_host":  LaunchConfiguration("zedbox_host"),
             "torso_width":  LaunchConfiguration("torso_width"),
             "torso_depth":  LaunchConfiguration("torso_depth"),
             "torso_height": LaunchConfiguration("torso_height"),
@@ -207,6 +214,7 @@ def generate_launch_description() -> LaunchDescription:
         right_fisheye_device_arg,
         left_realsense_serial_arg,
         right_realsense_serial_arg,
+        zedbox_host_arg,
         torso_width_arg,
         torso_depth_arg,
         torso_height_arg,

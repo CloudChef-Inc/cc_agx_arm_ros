@@ -111,6 +111,10 @@ class WebappNode(Node):
         self.declare_parameter("realsense_depth_w", 848)
         self.declare_parameter("realsense_depth_h", 480)
         self.declare_parameter("realsense_fps",     15)
+        # ZedBox skeleton streamer host — TCP client connects here to
+        # receive body tracking JSON. Empty = disabled.
+        self.declare_parameter("zedbox_host", "")
+        self.declare_parameter("zedbox_port", 9090)
         # Torso dimensions — used by the 3D rendering in the browser.
         # Set from the launch file (same source as the xacro).
         self.declare_parameter("torso_width",  0.185)
@@ -163,6 +167,11 @@ class WebappNode(Node):
             "right",
             self.get_parameter("right_pika_serial").get_parameter_value().string_value,
         )
+
+        # Skeleton data from ZedBox (updated by background TCP client).
+        self._skeleton: "Dict | None" = None
+        self._skeleton_lock = threading.Lock()
+        self._start_skeleton_client()
 
         # Camera workers — per-side, started explicitly in start_cameras().
         self.fisheye: Dict[str, "FisheyeCamera | None"] = {"left": None, "right": None}
@@ -304,6 +313,57 @@ class WebappNode(Node):
             self.get_logger().info(f"{side} Pika connected on {serial_path}")
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"{side} Pika init error: {e}")
+
+    # ---- ZedBox skeleton TCP client ------------------------------------
+    def _start_skeleton_client(self) -> None:
+        host = self.get_parameter("zedbox_host").get_parameter_value().string_value
+        port = self.get_parameter("zedbox_port").get_parameter_value().integer_value
+        if not host:
+            return
+        self._skeleton_thread = threading.Thread(
+            target=self._skeleton_client_loop,
+            args=(host, port), daemon=True, name="skeleton-tcp",
+        )
+        self._skeleton_thread.start()
+        self.get_logger().info(f"skeleton TCP client connecting to {host}:{port}")
+
+    def _skeleton_client_loop(self, host: str, port: int) -> None:
+        """Background thread: connect to ZedBox TCP, read JSON lines,
+        store latest skeleton under _skeleton_lock."""
+        import socket as _socket
+        while True:
+            try:
+                sock = _socket.create_connection((host, port), timeout=5.0)
+                sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
+                self.get_logger().info(f"skeleton client connected to {host}:{port}")
+                buf = b""
+                while True:
+                    chunk = sock.recv(8192)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        try:
+                            data = json.loads(line)
+                            with self._skeleton_lock:
+                                self._skeleton = data
+                        except json.JSONDecodeError:
+                            pass
+            except (OSError, ConnectionRefusedError, TimeoutError) as e:
+                self.get_logger().warn_throttle(
+                    self.get_clock(), 10.0,
+                    f"skeleton client: {e}; retrying in 2s",
+                )
+            try:
+                sock.close()  # type: ignore[possibly-undefined]
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(2.0)
+
+    def skeleton_snapshot(self) -> "Dict | None":
+        with self._skeleton_lock:
+            return self._skeleton
 
     # ---- feedback cache ------------------------------------------------
     def _on_state(self, side: str, msg: JointState) -> None:
@@ -541,7 +601,12 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
             await asyncio.sleep(0.05)
             if not clients:
                 continue
-            payload = json.dumps({"type": "state", "data": node.snapshot()})
+            state_data = node.snapshot()
+            skeleton = node.skeleton_snapshot()
+            msg = {"type": "state", "data": state_data}
+            if skeleton is not None:
+                msg["skeleton"] = skeleton
+            payload = json.dumps(msg)
             dead: List[WebSocket] = []
             for ws in list(clients):
                 try:

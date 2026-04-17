@@ -412,6 +412,9 @@ function connect() {
         }
       }
     }
+    if (msg.skeleton) {
+      updateSkeletonViz(msg.skeleton);
+    }
   });
 }
 
@@ -611,6 +614,96 @@ async function pollCameraStats() {
       }
       el.textContent = line;
     }
+  }
+}
+
+// ------------ boot ------------------------------------------------------
+// ------------ skeleton visualization (ZedBox body tracking) -----------
+// Renders a stick figure from the ZedBox skeleton data alongside the
+// robot model. The skeleton is drawn as spheres (joints) + lines (bones)
+// in the Three.js scene. ZED coordinate system: right-handed Y-up.
+// We transform to our scene's Z-up convention.
+
+const SKELETON_BONES = [
+  ["PELVIS", "NAVAL_SPINE"], ["NAVAL_SPINE", "CHEST_SPINE"],
+  ["CHEST_SPINE", "NECK"], ["NECK", "HEAD"],
+  ["NECK", "LEFT_CLAVICLE"], ["LEFT_CLAVICLE", "LEFT_SHOULDER"],
+  ["LEFT_SHOULDER", "LEFT_ELBOW"], ["LEFT_ELBOW", "LEFT_WRIST"],
+  ["LEFT_WRIST", "LEFT_HAND"], ["LEFT_HAND", "LEFT_HANDTIP"],
+  ["LEFT_WRIST", "LEFT_THUMB"],
+  ["NECK", "RIGHT_CLAVICLE"], ["RIGHT_CLAVICLE", "RIGHT_SHOULDER"],
+  ["RIGHT_SHOULDER", "RIGHT_ELBOW"], ["RIGHT_ELBOW", "RIGHT_WRIST"],
+  ["RIGHT_WRIST", "RIGHT_HAND"], ["RIGHT_HAND", "RIGHT_HANDTIP"],
+  ["RIGHT_WRIST", "RIGHT_THUMB"],
+];
+
+const skelGroup = new THREE.Group();
+skelGroup.visible = false;
+scene.add(skelGroup);
+
+// Pre-create reusable joint spheres + bone lines.
+const skelJoints = {};
+const skelBoneLines = [];
+const skelJointMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+const skelBoneMat = new THREE.LineBasicMaterial({ color: 0x00cc66, linewidth: 2 });
+
+function ensureSkelJoint(name) {
+  if (!skelJoints[name]) {
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.02, 8, 8), skelJointMat,
+    );
+    skelGroup.add(mesh);
+    skelJoints[name] = mesh;
+  }
+  return skelJoints[name];
+}
+
+function updateSkeletonViz(skel) {
+  if (!skel || !skel.keypoints || skel.body_id < 0) {
+    skelGroup.visible = false;
+    return;
+  }
+  skelGroup.visible = true;
+  const kps = skel.keypoints;
+
+  // Position each joint sphere. ZED is Y-up; our scene is Z-up.
+  // Transform: scene_x = zed_x, scene_y = -zed_z, scene_z = zed_y
+  // Offset the skeleton to stand beside the robot (shift along +Y in scene).
+  const SKEL_OFFSET_X = 0;
+  const SKEL_OFFSET_Y = 0.8;  // 80cm in front of the robot
+  const SKEL_OFFSET_Z = 0;
+
+  for (const [name, kp] of Object.entries(kps)) {
+    const joint = ensureSkelJoint(name);
+    joint.position.set(
+      kp.pos[0] + SKEL_OFFSET_X,
+      -kp.pos[2] + SKEL_OFFSET_Y,
+      kp.pos[1] + SKEL_OFFSET_Z,
+    );
+    // Dim low-confidence joints.
+    joint.material = kp.conf > 0.3 ? skelJointMat : skelJointMat;
+    joint.scale.setScalar(kp.conf > 0.3 ? 1 : 0.5);
+  }
+
+  // Remove old bone lines and redraw.
+  for (const line of skelBoneLines) {
+    skelGroup.remove(line);
+    line.geometry.dispose();
+  }
+  skelBoneLines.length = 0;
+
+  for (const [a, b] of SKELETON_BONES) {
+    if (!kps[a] || !kps[b]) continue;
+    const pa = kps[a].pos;
+    const pb = kps[b].pos;
+    const points = [
+      new THREE.Vector3(pa[0] + SKEL_OFFSET_X, -pa[2] + SKEL_OFFSET_Y, pa[1] + SKEL_OFFSET_Z),
+      new THREE.Vector3(pb[0] + SKEL_OFFSET_X, -pb[2] + SKEL_OFFSET_Y, pb[1] + SKEL_OFFSET_Z),
+    ];
+    const geom = new THREE.BufferGeometry().setFromPoints(points);
+    const line = new THREE.Line(geom, skelBoneMat);
+    skelGroup.add(line);
+    skelBoneLines.push(line);
   }
 }
 
