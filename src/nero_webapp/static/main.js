@@ -659,6 +659,10 @@ function ensureSkelJoint(name) {
 }
 
 function updateSkeletonViz(skel) {
+  // Debug: expose to console for diagnostics.
+  window._skelDebug = (window._skelDebug || 0) + 1;
+  window._lastSkel = skel;
+
   if (!skel || !skel.keypoints || skel.body_id < 0) {
     skelGroup.visible = false;
     return;
