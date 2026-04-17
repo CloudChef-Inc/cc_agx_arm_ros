@@ -624,8 +624,15 @@ async function pollCameraStats() {
 
 let mocapEnabled = false;
 
-// Calibration data: reference bone vectors at T-pose (arm straight out).
-// At T-pose all robot joints = 0 (arm extends straight sideways).
+// Robot joint values when the arm is in T-pose (straight out to the side).
+// NOT all-zeros — the URDF's joint frame transforms mean "arm straight
+// out" corresponds to these specific angles. Measured physically.
+const TPOSE_JOINTS = {
+  right: [0.000, 0.000, 2.245, 0.000, -2.220, 0.000, 0.000],
+  left:  [0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000], // TODO: measure left
+};
+
+// Calibration data: reference bone vectors at T-pose.
 const calibration = {
   done: false,
   frames: [],           // collected during calibration countdown
@@ -768,13 +775,18 @@ function applyMocapToModel() {
 
   // Right arm only for now.
   for (const side of ["right"]) {
-    const angles = extractArmAngles(skel.keypoints, side);
-    if (!angles) continue;
+    const deltas = extractArmAngles(skel.keypoints, side);
+    if (!deltas) continue;
 
+    const tpose = TPOSE_JOINTS[side];
+
+    // Robot joints = T-pose offset + delta from skeleton.
     // Clamp to joint limits.
+    const angles = [];
     for (let i = 0; i < 7 && i < jointLimits.length; i++) {
+      const raw = tpose[i] + deltas[i];
       const [lo, hi] = jointLimits[i];
-      angles[i] = Math.max(lo, Math.min(hi, angles[i]));
+      angles.push(Math.max(lo, Math.min(hi, raw)));
     }
 
     // Update sliders + 3D model.
