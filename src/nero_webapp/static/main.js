@@ -18,10 +18,10 @@ import URDFLoader from "urdf-loader";
 //
 // Right arm mounts at +X and extends along +X.
 // Left arm  mounts at -X and extends along -X.
-const TORSO_X = 0.30;  // width  (left↔right)
-const TORSO_Y = 0.10;  // depth  (front↔back)
-const TORSO_Z = 0.60;  // height (down↔up)
-const SHOULDER_X = 0.15; // lateral offset of shoulder from centerline
+const TORSO_X = 0.185;  // width  (left↔right)
+const TORSO_Y = 0.10;   // depth  (front↔back)
+const TORSO_Z = 0.60;   // height (down↔up)
+const SHOULDER_X = 0.0925; // lateral offset of shoulder from centerline
 const SHOULDER_Z = 0.55; // shoulder height above floor
 
 // ------------ DOM bootstrap ---------------------------------------------
