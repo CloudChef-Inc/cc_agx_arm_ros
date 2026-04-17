@@ -18,10 +18,13 @@ import URDFLoader from "urdf-loader";
 //
 // Right arm mounts at +X and extends along +X.
 // Left arm  mounts at -X and extends along -X.
-const TORSO_X = 0.185;  // width  (left↔right)
-const TORSO_Y = 0.10;   // depth  (front↔back)
-const TORSO_Z = 0.60;   // height (down↔up)
-const SHOULDER_X = 0.0925; // lateral offset of shoulder from centerline
+// Fetched from /torso_config at boot — single source of truth is the
+// launch file, which passes the same values to both the xacro (URDF
+// model) and the webapp node (this 3D rendering).
+let TORSO_X = 0.185;   // width  (left↔right) — overwritten at boot
+let TORSO_Y = 0.10;    // depth  (front↔back)
+let TORSO_Z = 0.60;    // height (down↔up)
+let SHOULDER_X = 0.0925; // lateral offset of shoulder from centerline
 const SHOULDER_Z = 0.55; // shoulder height above floor
 
 // ------------ DOM bootstrap ---------------------------------------------
@@ -613,6 +616,25 @@ async function pollCameraStats() {
 
 // ------------ boot ------------------------------------------------------
 async function boot() {
+  // Fetch torso dimensions from the server (single source of truth).
+  try {
+    const tcResp = await fetch("/torso_config");
+    const tc = await tcResp.json();
+    TORSO_X = tc.torso_width;
+    TORSO_Y = tc.torso_depth;
+    TORSO_Z = tc.torso_height;
+    SHOULDER_X = TORSO_X / 2.0;
+    // Update the torso box + shoulder mounts that were created with
+    // the initial (possibly stale) defaults.
+    torso.geometry.dispose();
+    torso.geometry = new THREE.BoxGeometry(TORSO_X, TORSO_Y, TORSO_Z);
+    torso.position.set(0, 0, TORSO_Z / 2);
+    controls.target.set(0, 0, TORSO_Z - 0.05);
+    controls.update();
+  } catch (e) {
+    console.warn("torso_config fetch failed, using defaults:", e);
+  }
+
   const resp = await fetch("/joint_limits");
   const body = await resp.json();
   jointNames  = body.names;

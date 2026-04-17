@@ -80,14 +80,34 @@ def generate_launch_description() -> LaunchDescription:
                     "= fall back to /etc/nero/d405_sides.conf).",
     )
 
-    # Composed two-arm URDF via xacro.
+    # Torso dimensions — single source of truth. Flows to both the
+    # xacro (URDF model) and the webapp (3D rendering).
+    torso_width_arg = DeclareLaunchArgument(
+        "torso_width", default_value="0.185",
+        description="Distance between arm mounting plates (metres).",
+    )
+    torso_depth_arg = DeclareLaunchArgument(
+        "torso_depth", default_value="0.10",
+        description="Torso depth front-to-back (metres).",
+    )
+    torso_height_arg = DeclareLaunchArgument(
+        "torso_height", default_value="0.60",
+        description="Torso height (metres).",
+    )
+
+    # Composed two-arm URDF via xacro — pass torso dims as args.
     xacro_file = PathJoinSubstitution([
         FindPackageShare("nero_dual_description"),
         "urdf", "two_nero.urdf.xacro",
     ])
     robot_description = {
         "robot_description": ParameterValue(
-            Command(["xacro ", xacro_file]), value_type=str
+            Command([
+                "xacro ", xacro_file,
+                " torso_width:=", LaunchConfiguration("torso_width"),
+                " torso_depth:=", LaunchConfiguration("torso_depth"),
+                " torso_height:=", LaunchConfiguration("torso_height"),
+            ]), value_type=str
         ),
     }
 
@@ -142,6 +162,9 @@ def generate_launch_description() -> LaunchDescription:
             "right_fisheye_device":   LaunchConfiguration("right_fisheye_device"),
             "left_realsense_serial":  LaunchConfiguration("left_realsense_serial"),
             "right_realsense_serial": LaunchConfiguration("right_realsense_serial"),
+            "torso_width":  LaunchConfiguration("torso_width"),
+            "torso_depth":  LaunchConfiguration("torso_depth"),
+            "torso_height": LaunchConfiguration("torso_height"),
         }],
     )
 
@@ -184,6 +207,9 @@ def generate_launch_description() -> LaunchDescription:
         right_fisheye_device_arg,
         left_realsense_serial_arg,
         right_realsense_serial_arg,
+        torso_width_arg,
+        torso_depth_arg,
+        torso_height_arg,
         rsp_node,
         left_arm,
         right_arm,

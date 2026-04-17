@@ -14,10 +14,15 @@
 
   <xacro:include filename="$(find nero_dual_description)/urdf/nero_arm_macro.xacro"/>
 
-  <!-- ===== Mount geometry (edit to match your physical rig) ===== -->
-  <xacro:property name="torso_depth"       value="0.10"/>  <!-- X size -->
-  <xacro:property name="torso_width"       value="0.185"/>  <!-- Y size -->
-  <xacro:property name="torso_height"      value="0.60"/>  <!-- Z size -->
+  <!-- ===== Mount geometry — set via launch args so there's one
+       source of truth (the launch file) for both the URDF and the
+       webapp's 3D rendering. ===== -->
+  <xacro:arg name="torso_depth"  default="0.10"/>
+  <xacro:arg name="torso_width"  default="0.185"/>
+  <xacro:arg name="torso_height" default="0.60"/>
+  <xacro:property name="torso_depth"       value="$(arg torso_depth)"/>
+  <xacro:property name="torso_width"       value="$(arg torso_width)"/>
+  <xacro:property name="torso_height"      value="$(arg torso_height)"/>
   <xacro:property name="shoulder_y_offset" value="${torso_width / 2.0}"/>
   <xacro:property name="shoulder_z"        value="${torso_height - 0.05}"/>
 

@@ -111,6 +111,11 @@ class WebappNode(Node):
         self.declare_parameter("realsense_depth_w", 848)
         self.declare_parameter("realsense_depth_h", 480)
         self.declare_parameter("realsense_fps",     15)
+        # Torso dimensions — used by the 3D rendering in the browser.
+        # Set from the launch file (same source as the xacro).
+        self.declare_parameter("torso_width",  0.185)
+        self.declare_parameter("torso_depth",  0.10)
+        self.declare_parameter("torso_height", 0.60)
 
         self.joint_names: List[str] = (
             self.get_parameter("joint_names").get_parameter_value().string_array_value
@@ -440,6 +445,14 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
     @app.get("/joint_limits")
     async def joint_limits() -> Dict:
         return {"names": node.joint_names, "limits": JOINT_LIMITS}
+
+    @app.get("/torso_config")
+    async def torso_config() -> Dict:
+        return {
+            "torso_width":  node.get_parameter("torso_width").get_parameter_value().double_value,
+            "torso_depth":  node.get_parameter("torso_depth").get_parameter_value().double_value,
+            "torso_height": node.get_parameter("torso_height").get_parameter_value().double_value,
+        }
 
     # ---- gravity comp toggle (calls the gravity_comp node's param) ----
     # Lazy-create parameter clients per side on first use so the
