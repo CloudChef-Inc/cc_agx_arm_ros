@@ -215,7 +215,12 @@ def main():
     bt_params.enable_tracking = True
     bt_params.enable_body_fitting = True
     bt_params.body_format = sl.BODY_FORMAT.BODY_34
-    bt_params.detection_confidence_threshold = 40
+    # Confidence threshold attribute name varies across SDK versions.
+    for attr in ("detection_confidence_threshold", "minimum_confidence",
+                 "confidence_threshold"):
+        if hasattr(bt_params, attr):
+            setattr(bt_params, attr, 40)
+            break
 
     status = zed.enable_body_tracking(bt_params)
     if status != sl.ERROR_CODE.SUCCESS:
@@ -231,7 +236,11 @@ def main():
     runtime = sl.RuntimeParameters()
     bodies = sl.Bodies()
     bt_runtime = sl.BodyTrackingRuntimeParameters()
-    bt_runtime.detection_confidence_threshold = 40
+    for attr in ("detection_confidence_threshold", "minimum_confidence",
+                 "confidence_threshold"):
+        if hasattr(bt_runtime, attr):
+            setattr(bt_runtime, attr, 40)
+            break
 
     frame_count = 0
     fps_start = time.monotonic()
