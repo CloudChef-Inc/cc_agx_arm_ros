@@ -646,9 +646,22 @@ const calibration = {
 
 function startCalibration() {
   calibration.frames = [];
-  calibration.collecting = true;
+  calibration.collecting = false;
   calibration.done = false;
-  console.log("Calibration: hold T-pose (arms straight out). Collecting 30 frames...");
+  const btn = document.getElementById("btn-calibrate");
+  let countdown = 3;
+  const tick = () => {
+    if (countdown > 0) {
+      if (btn) btn.textContent = `Hold T-pose... ${countdown}`;
+      countdown--;
+      setTimeout(tick, 1000);
+    } else {
+      if (btn) btn.textContent = "Collecting...";
+      calibration.collecting = true;
+      console.log("Calibration: collecting 30 frames now.");
+    }
+  };
+  tick();
 }
 
 function processCalibrationFrame(kps) {
