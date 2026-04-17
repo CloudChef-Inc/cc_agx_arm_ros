@@ -1,0 +1,2 @@
+numpy
+# pyzed is installed with the ZED SDK, not via pip
