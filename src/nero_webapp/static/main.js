@@ -624,67 +624,132 @@ async function pollCameraStats() {
 
 let mocapEnabled = false;
 
+// Calibration data: reference bone vectors at T-pose (arm straight out).
+// At T-pose all robot joints = 0 (arm extends straight sideways).
+const calibration = {
+  done: false,
+  frames: [],           // collected during calibration countdown
+  collecting: false,
+  // Per-side reference vectors (in ZED Y-up frame).
+  ref: {
+    right: { upperArm: null, forearm: null, shoulderPos: null },
+    left:  { upperArm: null, forearm: null, shoulderPos: null },
+  },
+};
+
+function startCalibration() {
+  calibration.frames = [];
+  calibration.collecting = true;
+  calibration.done = false;
+  console.log("Calibration: hold T-pose (arms straight out). Collecting 30 frames...");
+}
+
+function processCalibrationFrame(kps) {
+  if (!calibration.collecting) return;
+  calibration.frames.push(JSON.parse(JSON.stringify(kps)));
+  const btn = document.getElementById("btn-calibrate");
+  if (btn) btn.textContent = `Calibrating (${calibration.frames.length}/30)`;
+
+  if (calibration.frames.length >= 30) {
+    calibration.collecting = false;
+    // Average the reference vectors over all frames.
+    for (const side of ["right"]) { // right only for now
+      const prefix = side === "right" ? "RIGHT" : "LEFT";
+      let uaSum = new THREE.Vector3();
+      let faSum = new THREE.Vector3();
+      let shSum = new THREE.Vector3();
+      let count = 0;
+      for (const frame of calibration.frames) {
+        const sh = frame[`${prefix}_SHOULDER`];
+        const el = frame[`${prefix}_ELBOW`];
+        const wr = frame[`${prefix}_WRIST`];
+        if (!sh || !el || !wr) continue;
+        const sp = new THREE.Vector3(sh.pos[0], sh.pos[1], sh.pos[2]);
+        const ep = new THREE.Vector3(el.pos[0], el.pos[1], el.pos[2]);
+        const wp = new THREE.Vector3(wr.pos[0], wr.pos[1], wr.pos[2]);
+        uaSum.add(new THREE.Vector3().subVectors(ep, sp));
+        faSum.add(new THREE.Vector3().subVectors(wp, ep));
+        shSum.add(sp);
+        count++;
+      }
+      if (count > 0) {
+        calibration.ref[side].upperArm = uaSum.divideScalar(count).normalize();
+        calibration.ref[side].forearm = faSum.divideScalar(count).normalize();
+        calibration.ref[side].shoulderPos = shSum.divideScalar(count);
+      }
+    }
+    calibration.done = true;
+    const btn2 = document.getElementById("btn-calibrate");
+    if (btn2) { btn2.textContent = "Recalibrate"; btn2.classList.add("active"); }
+    console.log("Calibration done. Reference upper arm:", calibration.ref.right.upperArm);
+  }
+}
+
 function extractArmAngles(kps, side) {
-  // Get arm keypoints (in ZED Y-up frame: X=right, Y=up, Z=toward camera).
-  const prefix = side === "left" ? "LEFT" : "RIGHT";
+  if (!calibration.done) return null;
+  const ref = calibration.ref[side];
+  if (!ref.upperArm) return null;
+
+  const prefix = side === "right" ? "RIGHT" : "LEFT";
   const sh = kps[`${prefix}_SHOULDER`];
   const el = kps[`${prefix}_ELBOW`];
   const wr = kps[`${prefix}_WRIST`];
-  const hd = kps[`${prefix}_HAND`];
-  const neck = kps["NECK"];
-
-  if (!sh || !el || !wr || !neck) return null;
+  if (!sh || !el || !wr) return null;
 
   const p = (kp) => new THREE.Vector3(kp.pos[0], kp.pos[1], kp.pos[2]);
-
   const shoulderPos = p(sh);
   const elbowPos = p(el);
   const wristPos = p(wr);
-  const neckPos = p(neck);
-  const handPos = hd ? p(hd) : wristPos.clone();
 
-  // Bone vectors (in ZED's Y-up frame).
+  // Current bone vectors.
   const upperArm = new THREE.Vector3().subVectors(elbowPos, shoulderPos);
   const forearm = new THREE.Vector3().subVectors(wristPos, elbowPos);
-  const handDir = new THREE.Vector3().subVectors(handPos, wristPos);
-  const torsoUp = new THREE.Vector3(0, 1, 0);
-  const torsoFwd = new THREE.Vector3(0, 0, -1); // ZED: -Z is forward (away from camera)
-  const sideSign = side === "right" ? 1 : -1;
-
-  // Normalize.
   const uaNorm = upperArm.clone().normalize();
   const faNorm = forearm.clone().normalize();
 
-  // --- Joint 1: Shoulder yaw (rotation in horizontal XZ plane) ---
-  // Project upper arm onto XZ plane, measure angle from the side axis.
-  const j1 = Math.atan2(-uaNorm.z, sideSign * uaNorm.x);
+  // Reference directions from T-pose calibration.
+  const refUA = ref.upperArm;  // unit vector, arm-straight-out direction
+  const refFA = ref.forearm;
 
-  // --- Joint 2: Shoulder pitch (elevation from horizontal) ---
-  const j2 = Math.asin(Math.max(-1, Math.min(1, -uaNorm.y)));
+  // Build a reference frame from the T-pose upper arm direction.
+  // At T-pose: upper arm points to the side (refUA).
+  // "Up" in the body frame = ZED Y-up = (0,1,0).
+  const bodyUp = new THREE.Vector3(0, 1, 0);
+  const bodyFwd = new THREE.Vector3().crossVectors(bodyUp, refUA).normalize();
+  // Recompute up to be orthogonal.
+  const bodyUpOrtho = new THREE.Vector3().crossVectors(refUA, bodyFwd).normalize();
 
-  // --- Joint 3: Shoulder roll (rotation about upper arm axis) ---
-  // Estimate from forearm direction relative to upper arm.
-  // Project forearm onto the plane perpendicular to upper arm.
+  // --- Joint 1: Shoulder yaw ---
+  // How far the upper arm has rotated forward/backward from the T-pose
+  // side direction, projected onto the horizontal plane (refUA-bodyFwd plane).
+  const uaHoriz = uaNorm.clone().projectOnPlane(bodyUpOrtho);
+  const j1 = Math.atan2(uaHoriz.dot(bodyFwd), uaHoriz.dot(refUA));
+
+  // --- Joint 2: Shoulder pitch ---
+  // How far the upper arm has rotated up/down from horizontal.
+  const j2 = -Math.asin(Math.max(-1, Math.min(1, uaNorm.dot(bodyUpOrtho))));
+
+  // --- Joint 3: Shoulder roll ---
+  // Rotation of the forearm plane around the upper arm axis.
+  // At T-pose, forearm points same direction as upper arm (straight).
+  // After calibration, any deviation of forearm from the "expected" plane
+  // indicates roll.
   const faPerp = forearm.clone().projectOnPlane(upperArm).normalize();
-  // Reference "up" in the perpendicular plane.
-  const armUp = torsoUp.clone().projectOnPlane(upperArm).normalize();
-  const armRight = new THREE.Vector3().crossVectors(upperArm, armUp).normalize();
-  const j3 = Math.atan2(faPerp.dot(armRight), faPerp.dot(armUp));
+  const expectedDown = bodyUpOrtho.clone().negate().projectOnPlane(upperArm).normalize();
+  const expectedSide = new THREE.Vector3().crossVectors(upperArm, expectedDown).normalize();
+  const j3 = faPerp.lengthSq() > 0.001
+    ? Math.atan2(faPerp.dot(expectedSide), faPerp.dot(expectedDown))
+    : 0;
 
-  // --- Joint 4: Elbow flexion (angle between upper arm and forearm) ---
+  // --- Joint 4: Elbow ---
+  // Angle between upper arm and forearm. 0 = straight (T-pose), positive = bent.
   const elbowAngle = upperArm.angleTo(forearm);
-  const j4 = Math.PI - elbowAngle; // 0 = straight, PI = fully bent
+  const j4 = elbowAngle; // 0 at T-pose, increases as elbow bends
 
-  // --- Joint 5: Forearm rotation (pronation/supination) ---
-  // Hard to extract from positions only. Estimate from hand direction.
-  const j5 = 0; // Leave at zero for now.
-
-  // --- Joint 6: Wrist pitch ---
-  const wristAngle = forearm.angleTo(handDir);
-  const j6 = wristAngle > 0.05 ? (wristAngle - Math.PI) * 0.5 : 0;
-
-  // --- Joint 7: Wrist roll ---
-  const j7 = 0; // Leave at zero for now.
+  // --- Joints 5, 6, 7: wrist (zero for now) ---
+  const j5 = 0;
+  const j6 = 0;
+  const j7 = 0;
 
   return [j1, j2, j3, j4, j5, j6, j7];
 }
@@ -694,7 +759,15 @@ function applyMocapToModel() {
   const skel = window._lastSkel;
   if (!skel || !skel.keypoints || skel.body_id < 0) return;
 
-  for (const side of ["left", "right"]) {
+  // If calibrating, collect frames.
+  if (calibration.collecting) {
+    processCalibrationFrame(skel.keypoints);
+    return;
+  }
+  if (!calibration.done) return;
+
+  // Right arm only for now.
+  for (const side of ["right"]) {
     const angles = extractArmAngles(skel.keypoints, side);
     if (!angles) continue;
 
@@ -855,11 +928,20 @@ async function boot() {
 
   // MoCap Sim toggle — drives the 3D model from skeleton data (no real hardware).
   const mocapSimBtn = document.getElementById("btn-mocap-sim");
+  const calibrateBtn = document.getElementById("btn-calibrate");
   if (mocapSimBtn) {
     mocapSimBtn.onclick = () => {
       mocapEnabled = !mocapEnabled;
       mocapSimBtn.classList.toggle("active", mocapEnabled);
       mocapSimBtn.textContent = mocapEnabled ? "MoCap Sim ON" : "MoCap Sim";
+      if (calibrateBtn) calibrateBtn.disabled = !mocapEnabled;
+    };
+  }
+  if (calibrateBtn) {
+    calibrateBtn.onclick = () => {
+      startCalibration();
+      calibrateBtn.textContent = "Calibrating...";
+      calibrateBtn.classList.remove("active");
     };
   }
 
