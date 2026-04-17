@@ -276,7 +276,7 @@
         <!-- Ry(-pi/2) aligns the Pika's coordinate frame (fingers
              along X) with the arm chain direction. Same rotation
              used in the official Piper+Pika combined URDF. -->
-        <origin xyz="0 0 0.0055" rpy="0 -1.5708 0"/>
+        <origin xyz="0 0 0.0055" rpy="3.1416 -1.5708 0"/>
         <parent link="gripper_flange"/>
         <child link="gripper_base"/>
     </joint>
