@@ -210,6 +210,16 @@ def main():
         sys.exit(1)
     print(f"[streamer] ZED opened: {zed.get_camera_information().camera_model}")
 
+    # --- Positional tracking (required by body tracking) ---
+    tracking_params = sl.PositionalTrackingParameters()
+    tracking_params.set_as_static = True  # camera is fixed, not moving
+    status = zed.enable_positional_tracking(tracking_params)
+    if status != sl.ERROR_CODE.SUCCESS:
+        print(f"[streamer] positional tracking enable failed: {status}",
+              file=sys.stderr)
+        sys.exit(1)
+    print("[streamer] positional tracking enabled (static mode)")
+
     # --- Body tracking ---
     bt_params = sl.BodyTrackingParameters()
     bt_params.enable_tracking = True
