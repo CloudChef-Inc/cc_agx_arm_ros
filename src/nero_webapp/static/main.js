@@ -149,6 +149,7 @@ const loadingManager = new THREE.LoadingManager();
 const urdfLoader = new URDFLoader(loadingManager);
 urdfLoader.packages = {
   agx_arm_description: "/pkg/agx_arm_description",
+  pika_gripper_description: "/pkg/pika_gripper_description",
 };
 
 // Custom mesh loader: urdf-loader's defaults may not resolve three/addons
@@ -249,13 +250,16 @@ function applyArmPose(side) {
     if (j) j.setJointValue(cmd[i]);
   }
   // Drive the two prismatic gripper fingers from the "gripper" width value.
+  // Pika gripper: both jaws move along Y axis.
+  //   gripper_joint1 (left):  limit [-0.05, 0], negative = close
+  //   gripper_joint2 (right): limit [0, 0.05],  positive = open
   const gi = jointNames.indexOf("gripper");
   if (gi >= 0) {
     const w = cmd[gi];  // width in metres (0–0.1)
     const j1 = robot.joints["gripper_joint1"];
     const j2 = robot.joints["gripper_joint2"];
-    if (j1) j1.setJointValue(w * 0.5);   // one jaw opens +
-    if (j2) j2.setJointValue(-w * 0.5);  // other jaw opens -
+    if (j1) j1.setJointValue(-w * 0.5);  // left jaw (negative Y = close)
+    if (j2) j2.setJointValue(w * 0.5);   // right jaw (positive Y = open)
   }
 }
 

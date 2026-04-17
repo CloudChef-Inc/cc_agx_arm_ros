@@ -414,6 +414,17 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
         name="agx_pkg",
     )
 
+    # Serve Pika gripper meshes so the browser can load the STL files.
+    try:
+        pika_share = Path(get_package_share_directory("pika_gripper_description"))
+        app.mount(
+            "/pkg/pika_gripper_description",
+            StaticFiles(directory=str(pika_share)),
+            name="pika_pkg",
+        )
+    except Exception:  # noqa: BLE001
+        pass  # pika_gripper_description not installed — gripper won't render
+
     # Hand-merged flat URDF (arm + Pika gripper), shipped in our static dir.
     # Loaded once at startup so the GET /nero_urdf path is a cheap memory read.
     nero_urdf_xml = (static_dir / "nero_with_gripper.urdf").read_text()
