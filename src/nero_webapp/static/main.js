@@ -965,8 +965,6 @@ async function boot() {
   if (calibrateBtn) {
     calibrateBtn.onclick = () => {
       startCalibration();
-      calibrateBtn.textContent = "Calibrating...";
-      calibrateBtn.classList.remove("active");
     };
   }
 
