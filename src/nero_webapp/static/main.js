@@ -791,25 +791,44 @@ function updateSkeletonViz(skel) {
     joint.scale.setScalar(kp.conf > 0.3 ? 1 : 0.5);
   }
 
-  // Remove old bone lines and redraw.
-  for (const line of skelBoneLines) {
-    skelGroup.remove(line);
-    line.geometry.dispose();
+  // Remove old bone lines + hand meshes and redraw.
+  for (const obj of skelBoneLines) {
+    skelGroup.remove(obj);
+    obj.geometry.dispose();
   }
   skelBoneLines.length = 0;
 
+  // Helper: ZED pos → scene Vector3.
+  const toScene = (p) => new THREE.Vector3(p[0] * sc + ox, -p[2] * sc + oy, p[1] * sc + oz);
+
+  // Draw bones as lines.
   for (const [a, b] of SKELETON_BONES) {
     if (!kps[a] || !kps[b]) continue;
-    const pa = kps[a].pos;
-    const pb = kps[b].pos;
-    const points = [
-      new THREE.Vector3(pa[0] * sc + ox, -pa[2] * sc + oy, pa[1] * sc + oz),
-      new THREE.Vector3(pb[0] * sc + ox, -pb[2] * sc + oy, pb[1] * sc + oz),
-    ];
+    const points = [toScene(kps[a].pos), toScene(kps[b].pos)];
     const geom = new THREE.BufferGeometry().setFromPoints(points);
     const line = new THREE.Line(geom, skelBoneMat);
     skelGroup.add(line);
     skelBoneLines.push(line);
+  }
+
+  // Draw hands as oriented triangles (thumb → handtip → hand center)
+  // so wrist pitch/roll is visible as the triangle rotates.
+  const handTriMat = new THREE.MeshBasicMaterial({
+    color: 0x00ff88, transparent: true, opacity: 0.5,
+    side: THREE.DoubleSide,
+  });
+  for (const side of ["LEFT", "RIGHT"]) {
+    const thumb = kps[`${side}_THUMB`];
+    const tip = kps[`${side}_HANDTIP`];
+    const palm = kps[`${side}_HAND`];
+    if (!thumb || !tip || !palm) continue;
+    const pts = [toScene(thumb.pos), toScene(tip.pos), toScene(palm.pos)];
+    const triGeom = new THREE.BufferGeometry().setFromPoints(pts);
+    triGeom.setIndex([0, 1, 2]);
+    triGeom.computeVertexNormals();
+    const triMesh = new THREE.Mesh(triGeom, handTriMat);
+    skelGroup.add(triMesh);
+    skelBoneLines.push(triMesh);
   }
 }
 
