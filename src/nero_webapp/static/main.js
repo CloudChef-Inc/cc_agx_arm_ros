@@ -618,6 +618,107 @@ async function pollCameraStats() {
 }
 
 // ------------ boot ------------------------------------------------------
+// ------------ mocap angle extraction from skeleton --------------------
+// Extracts 7 joint angles per arm from skeleton bone vectors and
+// drives the 3D robot model. Phase 2: sim only, no real hardware.
+
+let mocapEnabled = false;
+
+function extractArmAngles(kps, side) {
+  // Get arm keypoints (in ZED Y-up frame: X=right, Y=up, Z=toward camera).
+  const prefix = side === "left" ? "LEFT" : "RIGHT";
+  const sh = kps[`${prefix}_SHOULDER`];
+  const el = kps[`${prefix}_ELBOW`];
+  const wr = kps[`${prefix}_WRIST`];
+  const hd = kps[`${prefix}_HAND`];
+  const neck = kps["NECK"];
+
+  if (!sh || !el || !wr || !neck) return null;
+
+  const p = (kp) => new THREE.Vector3(kp.pos[0], kp.pos[1], kp.pos[2]);
+
+  const shoulderPos = p(sh);
+  const elbowPos = p(el);
+  const wristPos = p(wr);
+  const neckPos = p(neck);
+  const handPos = hd ? p(hd) : wristPos.clone();
+
+  // Bone vectors (in ZED's Y-up frame).
+  const upperArm = new THREE.Vector3().subVectors(elbowPos, shoulderPos);
+  const forearm = new THREE.Vector3().subVectors(wristPos, elbowPos);
+  const handDir = new THREE.Vector3().subVectors(handPos, wristPos);
+  const torsoUp = new THREE.Vector3(0, 1, 0);
+  const torsoFwd = new THREE.Vector3(0, 0, -1); // ZED: -Z is forward (away from camera)
+  const sideSign = side === "right" ? 1 : -1;
+
+  // Normalize.
+  const uaNorm = upperArm.clone().normalize();
+  const faNorm = forearm.clone().normalize();
+
+  // --- Joint 1: Shoulder yaw (rotation in horizontal XZ plane) ---
+  // Project upper arm onto XZ plane, measure angle from the side axis.
+  const j1 = Math.atan2(-uaNorm.z, sideSign * uaNorm.x);
+
+  // --- Joint 2: Shoulder pitch (elevation from horizontal) ---
+  const j2 = Math.asin(Math.max(-1, Math.min(1, -uaNorm.y)));
+
+  // --- Joint 3: Shoulder roll (rotation about upper arm axis) ---
+  // Estimate from forearm direction relative to upper arm.
+  // Project forearm onto the plane perpendicular to upper arm.
+  const faPerp = forearm.clone().projectOnPlane(upperArm).normalize();
+  // Reference "up" in the perpendicular plane.
+  const armUp = torsoUp.clone().projectOnPlane(upperArm).normalize();
+  const armRight = new THREE.Vector3().crossVectors(upperArm, armUp).normalize();
+  const j3 = Math.atan2(faPerp.dot(armRight), faPerp.dot(armUp));
+
+  // --- Joint 4: Elbow flexion (angle between upper arm and forearm) ---
+  const elbowAngle = upperArm.angleTo(forearm);
+  const j4 = Math.PI - elbowAngle; // 0 = straight, PI = fully bent
+
+  // --- Joint 5: Forearm rotation (pronation/supination) ---
+  // Hard to extract from positions only. Estimate from hand direction.
+  const j5 = 0; // Leave at zero for now.
+
+  // --- Joint 6: Wrist pitch ---
+  const wristAngle = forearm.angleTo(handDir);
+  const j6 = wristAngle > 0.05 ? (wristAngle - Math.PI) * 0.5 : 0;
+
+  // --- Joint 7: Wrist roll ---
+  const j7 = 0; // Leave at zero for now.
+
+  return [j1, j2, j3, j4, j5, j6, j7];
+}
+
+function applyMocapToModel() {
+  if (!mocapEnabled) return;
+  const skel = window._lastSkel;
+  if (!skel || !skel.keypoints || skel.body_id < 0) return;
+
+  for (const side of ["left", "right"]) {
+    const angles = extractArmAngles(skel.keypoints, side);
+    if (!angles) continue;
+
+    // Clamp to joint limits.
+    for (let i = 0; i < 7 && i < jointLimits.length; i++) {
+      const [lo, hi] = jointLimits[i];
+      angles[i] = Math.max(lo, Math.min(hi, angles[i]));
+    }
+
+    // Update sliders + 3D model.
+    for (let i = 0; i < 7; i++) {
+      setSlider(side, i, angles[i]);
+    }
+    applyArmPose(side);
+  }
+}
+
+// Run mocap → model update on every animation frame.
+function mocapAnimLoop() {
+  requestAnimationFrame(mocapAnimLoop);
+  if (mocapEnabled) applyMocapToModel();
+}
+mocapAnimLoop();
+
 // ------------ skeleton visualization (ZedBox body tracking) -----------
 // Renders a stick figure from the ZedBox skeleton data alongside the
 // robot model. The skeleton is drawn as spheres (joints) + lines (bones)
@@ -731,6 +832,16 @@ async function boot() {
     controls.update();
   } catch (e) {
     console.warn("torso_config fetch failed, using defaults:", e);
+  }
+
+  // MoCap Sim toggle — drives the 3D model from skeleton data (no real hardware).
+  const mocapSimBtn = document.getElementById("btn-mocap-sim");
+  if (mocapSimBtn) {
+    mocapSimBtn.onclick = () => {
+      mocapEnabled = !mocapEnabled;
+      mocapSimBtn.classList.toggle("active", mocapEnabled);
+      mocapSimBtn.textContent = mocapEnabled ? "MoCap Sim ON" : "MoCap Sim";
+    };
   }
 
   // Wire up skeleton position sliders.
