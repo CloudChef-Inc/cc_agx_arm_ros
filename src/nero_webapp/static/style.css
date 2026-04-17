@@ -193,6 +193,45 @@ button.btn-grav-comp.active:hover { filter: brightness(1.1); color: #07090c; }
   }
 }
 
+/* --- skeleton position controls -------------------------------------- */
+.skeleton-controls {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 12px;
+  padding: 6px 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  align-items: center;
+  font-size: 12px;
+}
+.skeleton-controls h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.skeleton-controls label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.skeleton-controls input[type=range] {
+  width: 80px;
+  accent-color: #00cc66;
+}
+.skeleton-controls span {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  min-width: 3em;
+  text-align: right;
+  color: var(--fg);
+}
+
 /* --- camera strip (WebRTC live feeds) --------------------------------- */
 /* Two rows × three columns — row 1 = left arm, row 2 = right arm, in
    left-to-right order fisheye / RS-color / RS-depth. */

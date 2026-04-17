@@ -50,6 +50,14 @@
     </section>
   </main>
 
+  <div class="skeleton-controls" id="skeleton-controls">
+    <h3>Skeleton Position</h3>
+    <label>X <input type="range" id="skel-x" min="-3" max="3" step="0.05" value="0"><span id="skel-x-val">0.00</span></label>
+    <label>Y <input type="range" id="skel-y" min="-3" max="3" step="0.05" value="0.8"><span id="skel-y-val">0.80</span></label>
+    <label>Z <input type="range" id="skel-z" min="-2" max="2" step="0.05" value="0"><span id="skel-z-val">0.00</span></label>
+    <label>Scale <input type="range" id="skel-scale" min="0.5" max="3" step="0.1" value="1"><span id="skel-scale-val">1.0</span></label>
+  </div>
+
   <footer class="cameras" id="cameras">
     <div class="camera" data-cam="fisheye_left">
       <h3>Left fisheye <span class="cam-status" id="cam-status-fisheye_left">–</span></h3>

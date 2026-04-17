@@ -672,17 +672,18 @@ function updateSkeletonViz(skel) {
 
   // Position each joint sphere. ZED is Y-up; our scene is Z-up.
   // Transform: scene_x = zed_x, scene_y = -zed_z, scene_z = zed_y
-  // Offset the skeleton to stand beside the robot (shift along +Y in scene).
-  const SKEL_OFFSET_X = 0;
-  const SKEL_OFFSET_Y = 0.8;  // 80cm in front of the robot
-  const SKEL_OFFSET_Z = 0;
+  // Offset + scale from UI sliders.
+  const ox = parseFloat(document.getElementById("skel-x")?.value || 0);
+  const oy = parseFloat(document.getElementById("skel-y")?.value || 0.8);
+  const oz = parseFloat(document.getElementById("skel-z")?.value || 0);
+  const sc = parseFloat(document.getElementById("skel-scale")?.value || 1);
 
   for (const [name, kp] of Object.entries(kps)) {
     const joint = ensureSkelJoint(name);
     joint.position.set(
-      kp.pos[0] + SKEL_OFFSET_X,
-      -kp.pos[2] + SKEL_OFFSET_Y,
-      kp.pos[1] + SKEL_OFFSET_Z,
+      kp.pos[0] * sc + ox,
+      -kp.pos[2] * sc + oy,
+      kp.pos[1] * sc + oz,
     );
     // Dim low-confidence joints.
     joint.material = kp.conf > 0.3 ? skelJointMat : skelJointMat;
@@ -701,8 +702,8 @@ function updateSkeletonViz(skel) {
     const pa = kps[a].pos;
     const pb = kps[b].pos;
     const points = [
-      new THREE.Vector3(pa[0] + SKEL_OFFSET_X, -pa[2] + SKEL_OFFSET_Y, pa[1] + SKEL_OFFSET_Z),
-      new THREE.Vector3(pb[0] + SKEL_OFFSET_X, -pb[2] + SKEL_OFFSET_Y, pb[1] + SKEL_OFFSET_Z),
+      new THREE.Vector3(pa[0] * sc + ox, -pa[2] * sc + oy, pa[1] * sc + oz),
+      new THREE.Vector3(pb[0] * sc + ox, -pb[2] * sc + oy, pb[1] * sc + oz),
     ];
     const geom = new THREE.BufferGeometry().setFromPoints(points);
     const line = new THREE.Line(geom, skelBoneMat);
@@ -730,6 +731,17 @@ async function boot() {
     controls.update();
   } catch (e) {
     console.warn("torso_config fetch failed, using defaults:", e);
+  }
+
+  // Wire up skeleton position sliders.
+  for (const axis of ["x", "y", "z", "scale"]) {
+    const slider = document.getElementById(`skel-${axis}`);
+    const valEl = document.getElementById(`skel-${axis}-val`);
+    if (slider && valEl) {
+      slider.addEventListener("input", () => {
+        valEl.textContent = parseFloat(slider.value).toFixed(2);
+      });
+    }
   }
 
   const resp = await fetch("/joint_limits");
