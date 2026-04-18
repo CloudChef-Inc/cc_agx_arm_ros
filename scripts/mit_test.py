@@ -1,26 +1,18 @@
 #!/usr/bin/env python3
-"""mit_test.py — monitor J1 position + torque during gravity comp test.
+"""mit_test.py — monitor J1 during gravity comp zero-torque test.
 
-Verifies the test sequence by tracking state transitions:
-  [WAITING]  → waiting for J1 to move to a non-zero position (webapp Send)
-  [ARMED]    → J1 at target, waiting for MIT commands (gravity comp enable)
-  [MIT]      → MIT commands detected, watching for arm to fall
+Prints J1 position, torque, and drift every 0.5s.
+Also subscribes to the MIT command topic to confirm gravity comp is active.
 
-Run:  source ~/cc-nero/install/setup.bash && python3 scripts/mit_test.py
+Run:
+  source ~/Desktop/CloudChef/cc_agx_arm_ros/install/setup.bash
+  python3 ~/Desktop/CloudChef/cc_agx_arm_ros/scripts/mit_test.py
 """
 import rclpy, time
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import JointState
-
-try:
-    from agx_arm_ctrl_msgs.msg import MoveMITMsg
-    HAS_MIT_MSG = True
-except ImportError:
-    HAS_MIT_MSG = False
-
-MOVE_THRESHOLD = 0.15   # rad — J1 must move at least this much from zero
-DRIFT_THRESHOLD = 0.02  # rad — arm "fell" if it drifts this much after MIT
+from agx_arm_msgs.msg import MoveMITMsg
 
 
 class MitTest(Node):
@@ -32,52 +24,27 @@ class MitTest(Node):
 
         self.create_subscription(
             JointState, "/left/feedback/joint_states", self.on_fb, qos)
+        self.create_subscription(
+            MoveMITMsg, "/left/control/move_mit", self.on_mit, qos)
 
-        if HAS_MIT_MSG:
-            self.create_subscription(
-                MoveMITMsg, "/left/control/move_mit", self.on_mit, qos)
-        else:
-            self.get_logger().warn(
-                "MoveMITMsg not found — won't detect MIT commands. "
-                "Source the workspace first.")
-
-        self.state = "WAITING"
-        self.start_pos = None       # J1 position when script starts
-        self.armed_pos = None       # J1 position when gravity comp enabled
+        self.initial_pos = None
         self.last_print = 0
+        self.mit_active = False
         self.mit_count = 0
-        self.fell = False
 
-        self.log("=== MIT MODE TEST — watching J1 (left arm) ===")
-        self.log("")
-        self.log("  1. Move J1 slider to ~0.5 rad in webapp, click Send")
-        self.log("  2. ros2 param set /gravity_comp_left gravity_scale 0.0")
-        self.log("  3. Click Gravity Comp (left) in webapp")
-        self.log("")
-        self.log("[WAITING] for J1 to move away from start position...")
-
-    def log(self, msg):
-        self.get_logger().info(msg)
+        self.get_logger().info("=== Watching J1 (left arm) — prints every 0.5s ===")
 
     def on_mit(self, msg):
         self.mit_count += 1
-        if self.state == "ARMED":
-            t_j1 = msg.torque[0] if msg.torque else None
-            kp_j1 = msg.kp[0] if msg.kp else None
-            kd_j1 = msg.kd[0] if msg.kd else None
-            self.state = "MIT"
-            self.armed_pos = self._last_pos
-            self.log("")
-            self.log(f"[MIT] Gravity comp ENABLED — MIT commands flowing")
-            self.log(f"      J1: kp={kp_j1}  kd={kd_j1}  t_ff={t_j1}")
-            if t_j1 is not None and abs(t_j1) > 0.01:
-                self.log(f"      WARNING: t_ff is NOT zero — "
-                         f"did you set gravity_scale to 0?")
-            else:
-                self.log(f"      t_ff ≈ 0 — good, gravity_scale is 0")
-            self.log(f"      J1 position at enable: {self.armed_pos:+.4f} rad")
-            self.log(f"      Watching for arm to fall...")
-            self.log("")
+        if not self.mit_active:
+            self.mit_active = True
+            t = msg.torque[0] if msg.torque else 0
+            kp = msg.kp[0] if msg.kp else 0
+            kd = msg.kd[0] if msg.kd else 0
+            p = msg.p_des[0] if msg.p_des else 0
+            self.get_logger().info(
+                f">>> MIT commands started — "
+                f"J1: kp={kp:.2f} kd={kd:.2f} t_ff={t:.4f} p_des={p:.4f}")
 
     def on_fb(self, msg):
         try:
@@ -87,40 +54,20 @@ class MitTest(Node):
 
         pos = msg.position[idx]
         torque = msg.effort[idx] if idx < len(msg.effort) else 0.0
-        vel = msg.velocity[idx] if idx < len(msg.velocity) else 0.0
-        self._last_pos = pos
 
-        if self.start_pos is None:
-            self.start_pos = pos
-            self.log(f"J1 start position: {pos:+.4f} rad")
-            return
+        if self.initial_pos is None:
+            self.initial_pos = pos
 
         now = time.time()
-
-        # State: waiting for user to Send a position from webapp
-        if self.state == "WAITING":
-            if abs(pos - self.start_pos) > MOVE_THRESHOLD:
-                self.state = "ARMED"
-                self.log("")
-                self.log(f"[ARMED] J1 moved to {pos:+.4f} rad "
-                         f"(Δ={pos - self.start_pos:+.4f})")
-                self.log(f"        Now set gravity_scale=0 and "
-                         f"enable gravity comp")
+        if now - self.last_print < 0.5:
             return
+        self.last_print = now
 
-        # State: MIT active — monitor drift and torque
-        if self.state == "MIT" and now - self.last_print >= 0.5:
-            self.last_print = now
-            drift = pos - self.armed_pos
-            self.log(f"  pos={pos:+.4f}  drift={drift:+.4f}  "
-                     f"torque={torque:+.4f}  vel={vel:+.4f}")
-
-            if not self.fell and abs(drift) > DRIFT_THRESHOLD:
-                self.fell = True
-                self.log("")
-                self.log(f"  >>> ARM FELL — drift={drift:+.4f} rad")
-                self.log(f"  >>> MIT mode IS working through the ROS stack")
-                self.log("")
+        drift = pos - self.initial_pos
+        mit = f"  mit_msgs={self.mit_count}" if self.mit_count else ""
+        self.get_logger().info(
+            f"J1  pos={pos:+.4f}  drift={drift:+.4f}  "
+            f"torque={torque:+.4f}{mit}")
 
 
 def main():
