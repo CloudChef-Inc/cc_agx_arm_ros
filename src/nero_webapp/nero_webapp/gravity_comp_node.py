@@ -171,6 +171,17 @@ class GravityCompNode(Node):
                     f"(was {'enabled' if was else 'disabled'})")
                 if was and not p.value:
                     self._reengage_position_hold()
+            elif p.name == "gravity_scale":
+                self.gravity_scale = float(p.value)
+                self.get_logger().info(
+                    f"gravity_scale changed to {self.gravity_scale}")
+            elif p.name == "kd":
+                self.kd = list(p.value)
+                self.get_logger().info(f"kd changed to {self.kd}")
+            elif p.name == "torque_limit":
+                self.torque_limit = float(p.value)
+                self.get_logger().info(
+                    f"torque_limit changed to {self.torque_limit}")
         return SetParametersResult(successful=True)
 
     def _reengage_position_hold(self) -> None:
