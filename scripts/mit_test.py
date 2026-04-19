@@ -7,11 +7,11 @@ Prints J1 pos/torque/drift every 0.5s, plus event logs when:
   - MIT t_ff value changes (gravity_scale changed)
   - J1 drifts significantly (arm falling = MIT working)
 
-Run:
-  source ~/Desktop/CloudChef/cc_agx_arm_ros/install/setup.bash
-  python3 ~/Desktop/CloudChef/cc_agx_arm_ros/scripts/mit_test.py
+Usage:
+  python3 scripts/mit_test.py          # default: left arm
+  python3 scripts/mit_test.py right    # right arm
 """
-import rclpy, time
+import rclpy, sys, time
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import JointState
@@ -21,14 +21,16 @@ from agx_arm_msgs.msg import MoveMITMsg
 class MitTest(Node):
     def __init__(self):
         super().__init__("mit_test")
+        side = sys.argv[1] if len(sys.argv) > 1 else "left"
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST, depth=1)
 
         self.create_subscription(
-            JointState, "/left/feedback/joint_states", self.on_fb, qos)
+            JointState, f"/{side}/feedback/joint_states", self.on_fb, qos)
         self.create_subscription(
-            MoveMITMsg, "/left/control/move_mit", self.on_mit, qos)
+            MoveMITMsg, f"/{side}/control/move_mit", self.on_mit, qos)
+        self.side = side
 
         self.prev_pos = None
         self.pos_at_mit_start = None
@@ -39,7 +41,7 @@ class MitTest(Node):
         self.last_tff = None
         self.drift_logged = False
 
-        self.get_logger().info("=== Watching J1 (left arm) — 0.5s intervals + events ===")
+        self.get_logger().info(f"=== Watching J1 ({side} arm) — 0.5s intervals + events ===")
 
     def on_mit(self, msg):
         self.mit_count += 1
