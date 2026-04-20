@@ -89,6 +89,9 @@ class AgxArmRosNode(Node):
         self.declare_parameter("tcp_offset", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
         self.declare_parameter("gripper_default_effort", 1.0)
         self.declare_parameter("publish_gripper_joint", True)
+        # Mounting orientation for firmware gravity comp in teach mode.
+        # 0x01=horizontal, 0x02=side-left, 0x03=side-right.
+        self.declare_parameter("installation_pos", 0x02)
 
     def _load_parameters(self):
         self.can_port = self.get_parameter("can_port").value
@@ -102,6 +105,7 @@ class AgxArmRosNode(Node):
         self.tcp_offset = self.get_parameter("tcp_offset").value
         self.gripper_default_effort = self.get_parameter("gripper_default_effort").value
         self.publish_gripper_joint = self.get_parameter("publish_gripper_joint").value
+        self.installation_pos = self.get_parameter("installation_pos").value
 
         if self.arm_type not in ArmModel.__dict__.values():
             self.get_logger().error(
@@ -812,16 +816,14 @@ class AgxArmRosNode(Node):
                     response.message = "Arm not connected"
                     return response
                 # Tell firmware the mount orientation so it can compensate
-                # gravity in teach/leader mode.  0x02 = left, 0x03 = right.
-                ns = self.get_namespace().strip("/")
-                if ns == "left":
-                    self.agx_arm._msg_mode.installation_pos = 0x02
-                elif ns == "right":
-                    self.agx_arm._msg_mode.installation_pos = 0x03
+                # gravity in teach/leader mode.
+                # 0x01=horizontal, 0x02=side-left, 0x03=side-right.
+                # Both Nero arms use gravity [-9.81,0,0] (+X up) = side mount.
+                self.agx_arm._msg_mode.installation_pos = self.installation_pos
                 self.agx_arm.set_leader_mode()
                 self.get_logger().info(
                     f"Teach mode ENABLED (leader zero-force drag, "
-                    f"installation_pos={self.agx_arm._msg_mode.installation_pos:#x})")
+                    f"installation_pos={self.installation_pos:#x})")
                 response.success = True
                 response.message = "teach_mode enabled"
             else:
