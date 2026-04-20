@@ -806,16 +806,18 @@ class AgxArmRosNode(Node):
     def _teach_mode_callback(self, request, response):
         """Toggle leader/teach mode (zero-force drag) on/off."""
         try:
-            if not self._check_arm_ready():
-                response.success = False
-                response.message = "Arm not connected"
-                return response
             if request.data:
+                if not self._check_arm_ready():
+                    response.success = False
+                    response.message = "Arm not connected"
+                    return response
                 self.agx_arm.set_leader_mode()
                 self.get_logger().info("Teach mode ENABLED (leader zero-force drag)")
                 response.success = True
                 response.message = "teach_mode enabled"
             else:
+                # Don't check _check_arm_ready — CAN push is disabled in
+                # leader mode so feedback may be unavailable.
                 self.agx_arm.set_normal_mode()
                 self._enable_arm(True, timeout=3.0)
                 self.get_logger().info("Teach mode DISABLED (normal mode)")
