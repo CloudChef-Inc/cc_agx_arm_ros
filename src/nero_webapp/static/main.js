@@ -342,17 +342,26 @@ function buildSliders() {
     if (teachBtn) {
       teachBtn.onclick = async () => {
         const enabling = !teachBtn.classList.contains("active");
-        const resp = await fetch("/teach_mode", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ side, enabled: enabling }),
-        });
-        if (resp.ok) {
-          teachBtn.classList.toggle("active", enabling);
-          teachBtn.textContent = enabling ? "Teach ON" : "Teach";
-        } else {
-          const err = await resp.json().catch(() => ({}));
-          console.error("teach_mode toggle failed:", err);
+        teachBtn.textContent = enabling ? "Enabling..." : "Disabling...";
+        try {
+          const resp = await fetch("/teach_mode", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ side, enabled: enabling }),
+          });
+          const data = await resp.json();
+          if (data.ok) {
+            teachBtn.classList.toggle("active", enabling);
+            teachBtn.textContent = enabling ? "Teach ON" : "Teach";
+          } else {
+            teachBtn.textContent = teachBtn.classList.contains("active") ? "Teach ON" : "Teach";
+            console.error("teach_mode failed:", data.error);
+            alert("Teach mode failed: " + (data.error || "unknown error"));
+          }
+        } catch (err) {
+          teachBtn.textContent = teachBtn.classList.contains("active") ? "Teach ON" : "Teach";
+          console.error("teach_mode error:", err);
+          alert("Teach mode error: " + err.message);
         }
       };
     }
