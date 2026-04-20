@@ -90,8 +90,8 @@ class AgxArmRosNode(Node):
         self.declare_parameter("gripper_default_effort", 1.0)
         self.declare_parameter("publish_gripper_joint", True)
         # Mounting orientation for firmware gravity comp in teach mode.
-        # 0x01=horizontal, 0x02=side-left, 0x03=side-right.
-        self.declare_parameter("installation_pos", 0x02)
+        # 0x00=unset, 0x01=horizontal, 0x02=side-left, 0x03=side-right.
+        self.declare_parameter("installation_pos", 0x00)
 
     def _load_parameters(self):
         self.can_port = self.get_parameter("can_port").value
@@ -816,14 +816,14 @@ class AgxArmRosNode(Node):
                     response.message = "Arm not connected"
                     return response
                 # Tell firmware the mount orientation so it can compensate
-                # gravity in teach/leader mode.
-                # 0x01=horizontal, 0x02=side-left, 0x03=side-right.
-                # Both Nero arms use gravity [-9.81,0,0] (+X up) = side mount.
-                self.agx_arm._msg_mode.installation_pos = self.installation_pos
+                # gravity in teach/leader mode.  Read param at call time
+                # so ros2 param set works without restart.
+                ipos = self.get_parameter("installation_pos").value
+                self.agx_arm._msg_mode.installation_pos = ipos
                 self.agx_arm.set_leader_mode()
                 self.get_logger().info(
                     f"Teach mode ENABLED (leader zero-force drag, "
-                    f"installation_pos={self.installation_pos:#x})")
+                    f"installation_pos={ipos:#x})")
                 response.success = True
                 response.message = "teach_mode enabled"
             else:
