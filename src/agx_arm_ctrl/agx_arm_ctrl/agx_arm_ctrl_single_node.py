@@ -811,8 +811,17 @@ class AgxArmRosNode(Node):
                     response.success = False
                     response.message = "Arm not connected"
                     return response
+                # Tell firmware the mount orientation so it can compensate
+                # gravity in teach/leader mode.  0x02 = left, 0x03 = right.
+                ns = self.get_namespace().strip("/")
+                if ns == "left":
+                    self.agx_arm._msg_mode.installation_pos = 0x02
+                elif ns == "right":
+                    self.agx_arm._msg_mode.installation_pos = 0x03
                 self.agx_arm.set_leader_mode()
-                self.get_logger().info("Teach mode ENABLED (leader zero-force drag)")
+                self.get_logger().info(
+                    f"Teach mode ENABLED (leader zero-force drag, "
+                    f"installation_pos={self.agx_arm._msg_mode.installation_pos:#x})")
                 response.success = True
                 response.message = "teach_mode enabled"
             else:
