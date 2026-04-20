@@ -502,6 +502,43 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
             return {"ok": True, "side": side, "enabled": enabled}
         return {"ok": False, "error": "parameter set failed"}
 
+    # ---- teach mode toggle (calls agx_arm_ctrl's teach_mode service) ----
+    _teach_clients: Dict[str, object] = {}
+
+    def _get_teach_client(side: str):
+        if side not in _teach_clients:
+            from std_srvs.srv import SetBool
+            name = f"/{side}/teach_mode"
+            _teach_clients[side] = node.create_client(SetBool, name)
+        return _teach_clients[side]
+
+    @app.post("/teach_mode")
+    async def teach_mode(request: Request) -> Dict:
+        import asyncio
+        from std_srvs.srv import SetBool
+
+        body = await request.json()
+        side = body.get("side", "right")
+        enabled = bool(body.get("enabled", False))
+
+        client = _get_teach_client(side)
+        if not client.wait_for_service(timeout_sec=1.0):
+            return {"ok": False, "error": f"teach_mode service for {side} not running"}
+
+        req = SetBool.Request()
+        req.data = enabled
+
+        future = client.call_async(req)
+        deadline = time.time() + 2.0
+        while not future.done() and time.time() < deadline:
+            await asyncio.sleep(0.05)
+        if not future.done():
+            return {"ok": False, "error": "teach_mode service timed out"}
+        resp = future.result()
+        if resp and resp.success:
+            return {"ok": True, "side": side, "enabled": enabled}
+        return {"ok": False, "error": resp.message if resp else "service call failed"}
+
     @app.get("/stats")
     async def stats() -> Dict:
         """Per-camera capture stats (fps, last-frame shape).

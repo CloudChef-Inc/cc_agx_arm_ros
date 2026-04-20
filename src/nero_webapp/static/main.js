@@ -337,6 +337,25 @@ function buildSliders() {
         }
       };
     }
+
+    const teachBtn = panels[side].querySelector(".btn-teach");
+    if (teachBtn) {
+      teachBtn.onclick = async () => {
+        const enabling = !teachBtn.classList.contains("active");
+        const resp = await fetch("/teach_mode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ side, enabled: enabling }),
+        });
+        if (resp.ok) {
+          teachBtn.classList.toggle("active", enabling);
+          teachBtn.textContent = enabling ? "Teach ON" : "Teach";
+        } else {
+          const err = await resp.json().catch(() => ({}));
+          console.error("teach_mode toggle failed:", err);
+        }
+      };
+    }
   }
 }
 

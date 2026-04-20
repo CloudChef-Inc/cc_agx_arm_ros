@@ -268,6 +268,7 @@ class AgxArmRosNode(Node):
 
     def _setup_services(self):
         self.create_service(SetBool, "enable_agx_arm", self._enable_callback)
+        self.create_service(SetBool, "teach_mode", self._teach_mode_callback)
         self.create_service(Empty, "move_home", self._move_home_callback)
         self.create_service(Empty, "emergency_stop", self._emergency_stop_callback)
         if not self.is_switch_seamlessly:
@@ -800,6 +801,30 @@ class AgxArmRosNode(Node):
             response.success = False
             response.message = f"Exception occurred: {str(e)}"
             self.get_logger().error(f"Failed to set enable state: {str(e)}")
+        return response
+
+    def _teach_mode_callback(self, request, response):
+        """Toggle leader/teach mode (zero-force drag) on/off."""
+        try:
+            if not self._check_arm_ready():
+                response.success = False
+                response.message = "Arm not connected"
+                return response
+            if request.data:
+                self.agx_arm.set_leader_mode()
+                self.get_logger().info("Teach mode ENABLED (leader zero-force drag)")
+                response.success = True
+                response.message = "teach_mode enabled"
+            else:
+                self.agx_arm.set_normal_mode()
+                self._enable_arm(True, timeout=3.0)
+                self.get_logger().info("Teach mode DISABLED (normal mode)")
+                response.success = True
+                response.message = "teach_mode disabled"
+        except Exception as e:
+            response.success = False
+            response.message = f"Exception: {str(e)}"
+            self.get_logger().error(f"teach_mode toggle failed: {str(e)}")
         return response
 
     def _move_home_callback(self, request, response):

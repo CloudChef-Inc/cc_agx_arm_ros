@@ -180,6 +180,9 @@ button.btn-send:hover { filter: brightness(1.1); color: #07090c; }
 button.btn-grav-comp { background: var(--panel-2); }
 button.btn-grav-comp.active { background: var(--ok); color: #07090c; border-color: var(--ok); }
 button.btn-grav-comp.active:hover { filter: brightness(1.1); color: #07090c; }
+button.btn-teach { background: var(--panel-2); }
+button.btn-teach.active { background: var(--accent); color: #07090c; border-color: var(--accent); }
+button.btn-teach.active:hover { filter: brightness(1.1); color: #07090c; }
 
 /* On narrow screens stack controls under the viewport instead of overlapping. */
 @media (max-width: 900px) {
