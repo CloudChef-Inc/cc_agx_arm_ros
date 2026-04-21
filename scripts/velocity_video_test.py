@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""velocity_video_test.py — verify AgileX's velocity-feedback workaround.
+"""velocity_video_test.py — check whether motor_states velocity ever populates.
 
-AgileX reply 2026-04-20: on V1.11 the velocity field reads low; multiply
-by 1000 to get rad/s. Fix coming in V1.12.
+Enters leader mode so joints can be back-driven by hand (no commanded
+motion). Streams per-joint raw motor-state velocity and raw*1000 at
+~20 Hz. You move joints manually and watch the values.
 
-This script mirrors the upstream two-phase connect pattern
-(demos/detect_nero_series.py): connect DEFAULT, read firmware, reconnect
-with NeroFW.V111 if firmware >= 1.11. Then it commands a small J1 sweep
-back and forth so the arm actually moves; during the motion it streams
-raw motor-state velocity and raw*1000 per joint.
+AgileX reply 2026-04-20 prescribed the ×1000 workaround on V1.11 (fix in
+V1.12). Our arm is on 1.10, so applicability is unconfirmed — this
+script just lets us see what the field actually reports.
 
 Stop the ROS launch first (only one process can hold the CAN bus):
   python3 scripts/velocity_video_test.py                # can_right
   python3 scripts/velocity_video_test.py can_left
 """
 import sys
-import threading
 import time
 
 from pyAgxArm import AgxArmFactory, NeroFW, create_agx_arm_config
@@ -50,27 +48,13 @@ while not arm.enable():
     time.sleep(0.01)
 print("[vel_test] arm enabled")
 
-arm.set_speed_percent(20)
+arm.set_leader_mode()
+print("[vel_test] LEADER MODE ACTIVE — move joints by hand to see velocity")
+print("[vel_test] columns: J<i> raw=<v> x1000=<v*1000>  (rad/s per AgileX)")
+print("[vel_test] Ctrl+C to stop\n")
 
-# Read current pose so we sweep from a safe starting point.
-ja = None
-for _ in range(100):
-    ja = arm.get_joint_angles()
-    if ja is not None and ja.hz > 0:
-        break
-    time.sleep(0.05)
-if ja is None or ja.hz <= 0:
-    raise RuntimeError("no joint_angles feedback — arm not pushing?")
-
-home = list(ja.msg)
-print(f"[vel_test] start pose (rad): {[round(x, 3) for x in home]}")
-
-stop = threading.Event()
-
-
-def stream():
-    print("[vel_test] columns: J<i> raw=<v> x1000=<v*1000>  (rad/s per AgileX)\n")
-    while not stop.is_set():
+try:
+    while True:
         parts = []
         for i in range(1, 8):
             ms = arm.get_motor_states(i)
@@ -78,27 +62,8 @@ def stream():
             parts.append(f"J{i} raw={v:+.5f} x1000={v*1000:+.3f}")
         print(" | ".join(parts))
         time.sleep(0.05)
-
-
-t = threading.Thread(target=stream, daemon=True)
-t.start()
-
-try:
-    print("[vel_test] commanding small J1 sweep (+/- 0.2 rad) — watch velocity")
-    for _ in range(3):
-        target = list(home)
-        target[0] = home[0] + 0.2
-        arm.move_j(target)
-        time.sleep(2.0)
-        target[0] = home[0] - 0.2
-        arm.move_j(target)
-        time.sleep(2.0)
-    arm.move_j(home)
-    time.sleep(2.0)
 except KeyboardInterrupt:
-    print("\n[vel_test] interrupted")
+    print("\n[vel_test] stopping")
 finally:
-    stop.set()
-    t.join(timeout=1.0)
     arm.set_normal_mode()
     print("[vel_test] normal mode restored")
