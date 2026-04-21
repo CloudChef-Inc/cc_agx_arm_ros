@@ -38,6 +38,8 @@ while not arm.enable():
     time.sleep(0.01)
 print("[leader_video_test] arm enabled")
 
+print(f"[leader_video_test] firmware={arm.get_firmware()}")
+
 arm.set_leader_mode()
 print("[leader_video_test] LEADER MODE ACTIVE — observe gravity comp now")
 
