@@ -42,6 +42,7 @@ const sliderState = {
   right: { cmd: [], fb: [], rowEls: [] },
 };
 const armRobots = { left: null, right: null };
+const ghostRobots = { left: null, right: null };
 
 // ------------ three.js scene --------------------------------------------
 // Switch the world to Z-up before creating any object whose orientation
@@ -191,10 +192,35 @@ function loadArm() {
   });
 }
 
+function makeGhost(robot) {
+  // Tint every mesh amber and make it translucent so the ghost reads as
+  // a "target" overlay distinct from the real (feedback) arm.
+  robot.traverse((obj) => {
+    if (!obj.isMesh) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    obj.material = mats.map((m) => {
+      const clone = m.clone();
+      if ("color" in clone) clone.color = new THREE.Color(0xffb300);
+      clone.transparent = true;
+      clone.opacity = 0.35;
+      clone.depthWrite = false;
+      return clone;
+    });
+    if (!Array.isArray(obj.material)) obj.material = obj.material[0];
+    obj.renderOrder = 500;
+  });
+  robot.visible = false;
+  return robot;
+}
+
 async function buildArms() {
-  const [leftRobot, rightRobot] = await Promise.all([loadArm(), loadArm()]);
+  const [leftRobot, rightRobot, leftGhost, rightGhost] = await Promise.all([
+    loadArm(), loadArm(), loadArm(), loadArm(),
+  ]);
   armRobots.left  = leftRobot;
   armRobots.right = rightRobot;
+  ghostRobots.left  = makeGhost(leftGhost);
+  ghostRobots.right = makeGhost(rightGhost);
 
   // The Nero URDF's arm chain extends along its own +Z axis. World is now
   // Z-up, so an unrotated arm would also point straight up — wrong for a
@@ -208,12 +234,14 @@ async function buildArms() {
   // 180° around its own (now world-X) chain axis so it sits right-side-up.
   rightMount.rotation.set(Math.PI, Math.PI / 2, 0);
   rightMount.add(rightRobot);
+  rightMount.add(rightGhost);
   scene.add(rightMount);
 
   const leftMount = new THREE.Group();
   leftMount.position.set(-SHOULDER_X, 0, SHOULDER_Z);
   leftMount.rotation.y = -Math.PI / 2;
   leftMount.add(leftRobot);
+  leftMount.add(leftGhost);
   scene.add(leftMount);
 
   applyArmPose("left");
@@ -241,6 +269,15 @@ async function buildArms() {
       sprite.renderOrder = 999;
       robot.add(sprite);
     }
+  }
+}
+
+function applyGhostPose(side, names, positions) {
+  const robot = ghostRobots[side];
+  if (!robot || !names || !positions) return;
+  for (let i = 0; i < names.length; i++) {
+    const j = robot.joints[names[i]];
+    if (j) j.setJointValue(positions[i]);
   }
 }
 
@@ -494,9 +531,14 @@ function connect() {
         if (s && s.names && s.positions) {
           updateFeedbackDisplay(side, s.names, s.positions);
         }
+        if (s && s.quest_ghost && s.quest_ghost.names && s.quest_ghost.positions) {
+          applyGhostPose(side, s.quest_ghost.names, s.quest_ghost.positions);
+        }
         if (s && s.quest_status !== undefined) {
           const statusEl = document.querySelector(`.quest-status[data-side="${side}"]`);
           const state = (s.quest_status || "").toString();
+          const ghost = ghostRobots[side];
+          if (ghost) ghost.visible = state.includes("preview=True");
           if (statusEl) {
             // Prominent countdown during CALIBRATING.
             const m = state.match(/countdown=(\d+)/);
