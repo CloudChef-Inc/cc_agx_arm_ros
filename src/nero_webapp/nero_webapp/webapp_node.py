@@ -449,6 +449,19 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
     probe = static_dir / "index.html"
     if probe.is_symlink() or probe.exists():
         resolved_static = probe.resolve().parent
+
+    # Serve main.js through a dedicated no-cache route BEFORE mounting
+    # StaticFiles at /static (otherwise the mount would claim it first).
+    # StaticFiles emits ETag/Last-Modified headers that cause 304s even
+    # after source edits — frustrating when iterating on frontend JS.
+    @app.get("/static/main.js")
+    async def main_js() -> Response:
+        return Response(
+            (resolved_static / "main.js").read_text(),
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        )
+
     app.mount("/static", StaticFiles(directory=str(resolved_static)), name="static")
 
     # Expose the upstream agx_arm_description share dir so the browser can
@@ -478,7 +491,10 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
-        return HTMLResponse((static_dir / "index.html").read_text())
+        return HTMLResponse(
+            (static_dir / "index.html").read_text(),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        )
 
     @app.get("/nero_urdf")
     async def nero_urdf() -> Response:

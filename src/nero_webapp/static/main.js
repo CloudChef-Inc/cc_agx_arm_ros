@@ -1,3 +1,4 @@
+console.log("=== main.js build: quest-countdown-4 ===");
 // Dual-Nero browser control.
 //
 // Renders two actual Nero arms (not stick figures) using urdf-loader + the
