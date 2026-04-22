@@ -83,7 +83,7 @@ def generate_launch_description() -> LaunchDescription:
     # Torso dimensions — single source of truth. Flows to both the
     # xacro (URDF model) and the webapp (3D rendering).
     torso_width_arg = DeclareLaunchArgument(
-        "torso_width", default_value="0.1126",
+        "torso_width", default_value="0.22517",
         description="Distance between the two arm base-link origins (metres).",
     )
     torso_depth_arg = DeclareLaunchArgument(

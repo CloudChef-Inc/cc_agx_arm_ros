@@ -113,7 +113,7 @@ class WebappNode(Node):
         self.declare_parameter("realsense_fps",     15)
         # Torso dimensions — used by the 3D rendering in the browser.
         # Set from the launch file (same source as the xacro).
-        self.declare_parameter("torso_width",       0.1126)
+        self.declare_parameter("torso_width",       0.22517)
         self.declare_parameter("torso_depth",       0.10)
         self.declare_parameter("torso_height",      0.60)
         self.declare_parameter("shoulder_tilt_deg", 20.0)

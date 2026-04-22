@@ -18,7 +18,7 @@
        source of truth (the launch file) for both the URDF and the
        webapp's 3D rendering. ===== -->
   <xacro:arg name="torso_depth"       default="0.10"/>
-  <xacro:arg name="torso_width"       default="0.1126"/>
+  <xacro:arg name="torso_width"       default="0.22517"/>
   <xacro:arg name="torso_height"      default="0.60"/>
   <xacro:arg name="shoulder_tilt_deg" default="20.0"/>
   <xacro:property name="torso_depth"       value="$(arg torso_depth)"/>

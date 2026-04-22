@@ -24,7 +24,7 @@ import URDFLoader from "urdf-loader";
 let TORSO_X = 0.185;   // width  (left↔right) — overwritten at boot
 let TORSO_Y = 0.10;    // depth  (front↔back)
 let TORSO_Z = 0.60;    // height (down↔up)
-let SHOULDER_X = 0.0563; // lateral offset of shoulder from centerline
+let SHOULDER_X = 0.112585; // lateral offset of shoulder from centerline
 const SHOULDER_Z = 0.55; // shoulder height above floor
 // Roll of each arm about its own +X axis (rad). Right arm rolls
 // +SHOULDER_TILT, left rolls -SHOULDER_TILT. Set from /torso_config so
