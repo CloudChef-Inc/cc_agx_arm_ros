@@ -496,9 +496,21 @@ function connect() {
         }
         if (s && s.quest_status !== undefined) {
           const statusEl = document.querySelector(`.quest-status[data-side="${side}"]`);
-          if (statusEl) statusEl.textContent = "quest: " + s.quest_status;
-          // Enable/disable Preview + Send based on state.
           const state = (s.quest_status || "").toString();
+          if (statusEl) {
+            // Prominent countdown during CALIBRATING.
+            const m = state.match(/countdown=(\d+)/);
+            if (state.includes("CALIBRATING") && m) {
+              statusEl.innerHTML =
+                `<span style="font-size:20px;font-weight:bold;color:#ffb300">` +
+                `Hold Quest controller steady — ${m[1]}</span>`;
+            } else if (state.includes("CALIBRATING")) {
+              statusEl.textContent = "Calibrating…";
+            } else {
+              statusEl.textContent = "quest: " + state;
+            }
+          }
+          // Enable/disable Preview + Send based on state.
           const ready = state.includes("READY") || state.includes("ACTIVE");
           const pv = document.querySelector(`.btn-quest-preview[data-side="${side}"]`);
           const fl = document.querySelector(`.btn-quest-follow[data-side="${side}"]`);
