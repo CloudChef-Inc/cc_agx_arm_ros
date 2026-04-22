@@ -369,7 +369,12 @@ class WebappNode(Node):
             try:
                 with self._pika_lock:
                     dist_mm = g.get_gripper_distance()
-                width_m = float(dist_mm) / 1000.0
+                # Pika SDK quirk: get_gripper_distance() is the closure
+                # (0 = fully open, 100 = fully closed) while
+                # set_gripper_distance() takes width (0 = closed,
+                # 100 = open). Convert to width so the sync slider
+                # matches the command convention.
+                width_m = max(0.0, (100.0 - float(dist_mm)) / 1000.0)
             except Exception:
                 continue
             names = list(snap[side].get("names", []))
