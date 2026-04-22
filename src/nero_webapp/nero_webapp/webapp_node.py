@@ -152,6 +152,21 @@ class WebappNode(Node):
         }
         self._latest_lock = threading.Lock()
 
+        # Quest leader ghost + status (for UI preview rendering).
+        self._quest_ghost: Dict[str, Dict] = {"left": {}, "right": {}}
+        self._quest_status: Dict[str, str] = {"left": "IDLE", "right": "IDLE"}
+        for _side, _ns in (("left", left_ns), ("right", right_ns)):
+            self.create_subscription(
+                JointState, f"/{_ns}/quest_leader/target_joint_states",
+                lambda msg, s=_side: self._on_quest_ghost(s, msg), qos,
+            )
+        from std_msgs.msg import String as _String
+        for _side, _ns in (("left", left_ns), ("right", right_ns)):
+            self.create_subscription(
+                _String, f"/{_ns}/quest_leader/status",
+                lambda msg, s=_side: self._on_quest_status(s, msg), qos,
+            )
+
         # ---- Pika grippers (USB-serial, per side, optional) ----------------
         self._pika: Dict[str, object] = {"left": None, "right": None}
         self._pika_lock = threading.Lock()
@@ -328,9 +343,23 @@ class WebappNode(Node):
                 "positions": filtered_positions,
             }
 
+    def _on_quest_ghost(self, side: str, msg: JointState) -> None:
+        with self._latest_lock:
+            self._quest_ghost[side] = {
+                "names": list(msg.name),
+                "positions": [float(p) for p in msg.position],
+            }
+
+    def _on_quest_status(self, side: str, msg) -> None:
+        with self._latest_lock:
+            self._quest_status[side] = str(msg.data)
+
     def snapshot(self) -> Dict[str, Dict]:
         with self._latest_lock:
             snap = {k: dict(v) for k, v in self._latest.items()}
+            for side in ("left", "right"):
+                snap[side]["quest_ghost"] = dict(self._quest_ghost.get(side) or {})
+                snap[side]["quest_status"] = self._quest_status.get(side, "IDLE")
         # Overlay live Pika gripper width onto each side if connected.
         for side in ("left", "right"):
             g = self._pika.get(side)
@@ -538,6 +567,61 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
         if resp and resp.success:
             return {"ok": True, "side": side, "enabled": enabled}
         return {"ok": False, "error": resp.message if resp else "service call failed"}
+
+    # ---- Quest leader mode (calls quest_leader_node services) ----
+    _quest_clients: Dict[str, Dict[str, object]] = {"left": {}, "right": {}}
+
+    def _get_quest_client(side: str, kind: str):
+        cache = _quest_clients.setdefault(side, {})
+        if kind not in cache:
+            if kind == "calibrate":
+                from std_srvs.srv import Trigger
+                cache[kind] = node.create_client(Trigger, f"/{side}/quest_leader/calibrate")
+            else:
+                from std_srvs.srv import SetBool
+                cache[kind] = node.create_client(SetBool, f"/{side}/quest_leader/{kind}")
+        return cache[kind]
+
+    async def _call_quest(side: str, kind: str, req):
+        import asyncio as _asyncio
+        client = _get_quest_client(side, kind)
+        if not client.wait_for_service(timeout_sec=1.0):
+            return {"ok": False, "error": f"quest_leader/{kind} for {side} not running"}
+        future = client.call_async(req)
+        deadline = time.time() + 3.0
+        while not future.done() and time.time() < deadline:
+            await _asyncio.sleep(0.05)
+        if not future.done():
+            return {"ok": False, "error": f"{kind} timed out"}
+        resp = future.result()
+        return {"ok": bool(resp and resp.success),
+                "message": getattr(resp, "message", ""),
+                "side": side}
+
+    @app.post("/quest_leader/calibrate")
+    async def quest_calibrate(request: Request) -> Dict:
+        from std_srvs.srv import Trigger
+        body = await request.json()
+        side = body.get("side", "right")
+        return await _call_quest(side, "calibrate", Trigger.Request())
+
+    @app.post("/quest_leader/preview")
+    async def quest_preview(request: Request) -> Dict:
+        from std_srvs.srv import SetBool
+        body = await request.json()
+        side = body.get("side", "right")
+        req = SetBool.Request()
+        req.data = bool(body.get("enabled", False))
+        return await _call_quest(side, "preview", req)
+
+    @app.post("/quest_leader/send")
+    async def quest_send(request: Request) -> Dict:
+        from std_srvs.srv import SetBool
+        body = await request.json()
+        side = body.get("side", "right")
+        req = SetBool.Request()
+        req.data = bool(body.get("enabled", False))
+        return await _call_quest(side, "send", req)
 
     @app.get("/stats")
     async def stats() -> Dict:

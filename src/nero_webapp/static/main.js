@@ -338,6 +338,62 @@ function buildSliders() {
       };
     }
 
+    // --- Quest leader buttons --------------------------------------------
+    const qCalib   = panels[side].querySelector(".btn-quest-calibrate");
+    const qPreview = panels[side].querySelector(".btn-quest-preview");
+    const qSend    = panels[side].querySelector(".btn-quest-send");
+
+    async function postQuest(path, body) {
+      const r = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return r.json();
+    }
+
+    if (qCalib) {
+      qCalib.onclick = async () => {
+        qCalib.disabled = true;
+        qCalib.textContent = "Calibrating...";
+        try {
+          const d = await postQuest("/quest_leader/calibrate", { side });
+          if (!d.ok) alert("Calibrate failed: " + (d.message || d.error || "?"));
+        } finally {
+          qCalib.disabled = false;
+          qCalib.textContent = "Calibrate Quest";
+        }
+      };
+    }
+    if (qPreview) {
+      qPreview.onclick = async () => {
+        const enabling = !qPreview.classList.contains("active");
+        const d = await postQuest("/quest_leader/preview", { side, enabled: enabling });
+        if (d.ok) {
+          qPreview.classList.toggle("active", enabling);
+          qPreview.textContent = enabling ? "Preview ON" : "Preview";
+          if (!enabling && qSend) {
+            qSend.classList.remove("active");
+            qSend.textContent = "Send (Quest)";
+          }
+        } else {
+          alert("Preview failed: " + (d.message || d.error || "?"));
+        }
+      };
+    }
+    if (qSend) {
+      qSend.onclick = async () => {
+        const enabling = !qSend.classList.contains("active");
+        const d = await postQuest("/quest_leader/send", { side, enabled: enabling });
+        if (d.ok) {
+          qSend.classList.toggle("active", enabling);
+          qSend.textContent = enabling ? "Send ON (Quest)" : "Send (Quest)";
+        } else {
+          alert("Send failed: " + (d.message || d.error || "?"));
+        }
+      };
+    }
+
     const teachBtn = panels[side].querySelector(".btn-teach");
     if (teachBtn) {
       teachBtn.onclick = async () => {
@@ -437,6 +493,22 @@ function connect() {
         const s = msg.data[side];
         if (s && s.names && s.positions) {
           updateFeedbackDisplay(side, s.names, s.positions);
+        }
+        if (s && s.quest_status !== undefined) {
+          const statusEl = document.querySelector(`.quest-status[data-side="${side}"]`);
+          if (statusEl) statusEl.textContent = "quest: " + s.quest_status;
+          // Enable/disable Preview + Send based on state.
+          const state = (s.quest_status || "").toString();
+          const ready = state.includes("READY") || state.includes("ACTIVE");
+          const pv = document.querySelector(`.btn-quest-preview[data-side="${side}"]`);
+          const sd = document.querySelector(`.btn-quest-send[data-side="${side}"]`);
+          if (pv) pv.disabled = !ready;
+          if (sd) sd.disabled = !(pv && pv.classList.contains("active"));
+          // Auto-reflect server-side auto-disarm of Send.
+          if (sd && sd.classList.contains("active") && !state.includes("send=True")) {
+            sd.classList.remove("active");
+            sd.textContent = "Send (Quest)";
+          }
         }
       }
     }

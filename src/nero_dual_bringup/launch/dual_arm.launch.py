@@ -95,6 +95,20 @@ def generate_launch_description() -> LaunchDescription:
         description="Torso height (metres).",
     )
 
+    quest_host_arg = DeclareLaunchArgument(
+        "quest_host", default_value="0.0.0.0",
+        description="Bind host for the Quest teleop-xr WSS server.",
+    )
+    quest_port_arg = DeclareLaunchArgument(
+        "quest_port", default_value="4443",
+        description="Port for the Quest teleop-xr WSS server.",
+    )
+    quest_debug_arg = DeclareLaunchArgument(
+        "quest_debug", default_value="false",
+        description="If true, quest_teleop_node fabricates sinusoidal poses "
+                    "instead of running the WebXR server (no headset needed).",
+    )
+
     # Composed two-arm URDF via xacro — pass torso dims as args.
     xacro_file = PathJoinSubstitution([
         FindPackageShare("nero_dual_description"),
@@ -196,6 +210,32 @@ def generate_launch_description() -> LaunchDescription:
         }],
     )
 
+    quest_teleop = Node(
+        package="nero_webapp",
+        executable="quest_teleop_node",
+        name="quest_teleop_node",
+        output="screen",
+        parameters=[{
+            "host": LaunchConfiguration("quest_host"),
+            "port": ParameterValue(LaunchConfiguration("quest_port"), value_type=int),
+            "debug_sinusoidal": ParameterValue(LaunchConfiguration("quest_debug"), value_type=bool),
+        }],
+    )
+    quest_leader_left = Node(
+        package="nero_webapp",
+        executable="quest_leader_node",
+        name="quest_leader_left",
+        output="screen",
+        parameters=[{"side": "left", "ee_link": "gripper_flange", "planning_group": "arm"}],
+    )
+    quest_leader_right = Node(
+        package="nero_webapp",
+        executable="quest_leader_node",
+        name="quest_leader_right",
+        output="screen",
+        parameters=[{"side": "right", "ee_link": "gripper_flange", "planning_group": "arm"}],
+    )
+
     return LaunchDescription([
         left_can_arg,
         right_can_arg,
@@ -210,10 +250,16 @@ def generate_launch_description() -> LaunchDescription:
         torso_width_arg,
         torso_depth_arg,
         torso_height_arg,
+        quest_host_arg,
+        quest_port_arg,
+        quest_debug_arg,
         rsp_node,
         left_arm,
         right_arm,
         webapp_node,
         gravity_comp_left,
         gravity_comp_right,
+        quest_teleop,
+        quest_leader_left,
+        quest_leader_right,
     ])

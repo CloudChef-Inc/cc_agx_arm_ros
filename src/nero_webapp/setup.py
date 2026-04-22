@@ -15,7 +15,7 @@ setup(
         (os.path.join("share", package_name, "static"),
          glob("static/*")),
     ],
-    install_requires=["setuptools", "fastapi", "uvicorn"],
+    install_requires=["setuptools", "fastapi", "uvicorn", "teleop-xr", "scipy", "numpy"],
     zip_safe=True,
     maintainer="atish",
     maintainer_email="atish@cloudchef.io",
@@ -25,6 +25,8 @@ setup(
         "console_scripts": [
             "webapp_node = nero_webapp.webapp_node:main",
             "gravity_comp = nero_webapp.gravity_comp_node:main",
+            "quest_teleop_node = nero_webapp.quest_teleop_node:main",
+            "quest_leader_node = nero_webapp.quest_leader_node:main",
         ],
     },
 )
