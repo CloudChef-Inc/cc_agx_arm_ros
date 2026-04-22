@@ -159,6 +159,9 @@ class QuestLeaderNode(Node):
         self._preview_on = False
         self._follow_on = False
         self._countdown_remaining = 0
+        self._calibration_start = 0.0
+        self._pending_ee_ref: Optional[Pose6] = None
+        self._pending_target_q: Optional[np.ndarray] = None
 
         ns = f"/{self.side}"
         self.create_subscription(
@@ -195,6 +198,7 @@ class QuestLeaderNode(Node):
 
         self.create_timer(1.0 / IK_RATE_HZ, self._ik_tick, callback_group=self._cb_group)
         self.create_timer(0.2, self._publish_status, callback_group=self._cb_group)
+        self.create_timer(0.2, self._calibration_tick, callback_group=self._cb_group)
 
         self.get_logger().info(
             f"quest_leader_node up (side={self.side}, ee={self.ee_link}, "
@@ -257,10 +261,15 @@ class QuestLeaderNode(Node):
 
     # ---------- services ----------
     def _calibrate_srv(self, request: Trigger.Request, response: Trigger.Response):
+        """Kick off a non-blocking 5 s calibration sequence.
+
+        Service returns immediately; the tick timer drives the countdown
+        and final snapshot. Keeps status-publish + IK-loop timers live
+        (a blocking sleep here would starve them on MultiThreadedExecutor).
+        """
         self.get_logger().info(f"[{self.side}] calibration requested (sim-only)")
         self._preview_on = False
         self._follow_on = False
-        self._state = STATE_CALIBRATING
 
         target_q = np.array(
             CALIBRATION_JOINT_POSE_LEFT if self.side == "left"
@@ -268,7 +277,6 @@ class QuestLeaderNode(Node):
             dtype=float,
         )
 
-        # Ghost preview — names match arm driver (unprefixed).
         ghost = JointState()
         ghost.header.stamp = self.get_clock().now().to_msg()
         ghost.name = list(ARM_JOINT_NAMES)
@@ -289,29 +297,43 @@ class QuestLeaderNode(Node):
             f"quat={ee_ref.rot.as_quat().tolist()}"
         )
 
-        for n in range(COUNTDOWN_S, 0, -1):
-            self._countdown_remaining = n
-            time.sleep(1.0)
-        self._countdown_remaining = 0
+        self._pending_ee_ref = ee_ref
+        self._pending_target_q = target_q.copy()
+        self._calibration_start = time.time()
+        self._countdown_remaining = COUNTDOWN_S
+        self._state = STATE_CALIBRATING
+        response.success = True
+        response.message = "calibration started"
+        return response
 
+    def _calibration_tick(self) -> None:
+        """Runs at 5 Hz. Advances the countdown and finalizes at T=0."""
+        if self._state != STATE_CALIBRATING:
+            return
+        elapsed = time.time() - self._calibration_start
+        remaining = max(0, int(math.ceil(COUNTDOWN_S - elapsed)))
+        self._countdown_remaining = remaining
+        if elapsed < COUNTDOWN_S:
+            return
+
+        # T=0: snapshot controller pose, transition to READY.
         with self._lock:
             ctrl = self._latest_ctrl
             ctrl_fresh = (time.time() - self._latest_ctrl_ts) < 0.5
-
         if not ctrl or not ctrl_fresh:
+            self.get_logger().error(
+                f"[{self.side}] calibration failed: no fresh controller pose "
+                f"(fresh={ctrl_fresh})"
+            )
             self._state = STATE_IDLE
-            response.success = False
-            response.message = f"missing ctrl ref at snapshot (fresh={ctrl_fresh})"
-            return response
+            return
 
         self._ctrl_ref = ctrl
-        self._ee_ref = ee_ref
-        self._last_ik_solution = target_q.copy()
+        self._ee_ref = self._pending_ee_ref
+        self._last_ik_solution = self._pending_target_q.copy()
+        self._countdown_remaining = 0
         self._state = STATE_READY
         self.get_logger().info(f"[{self.side}] calibrated (sim); state=READY")
-        response.success = True
-        response.message = "calibrated"
-        return response
 
     def _preview_srv(self, request: SetBool.Request, response: SetBool.Response):
         if request.data:
