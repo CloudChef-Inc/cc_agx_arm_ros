@@ -351,8 +351,12 @@ class WebappNode(Node):
             }
 
     def _on_quest_status(self, side: str, msg) -> None:
+        data = str(msg.data)
         with self._latest_lock:
-            self._quest_status[side] = str(msg.data)
+            prev = self._quest_status.get(side)
+            self._quest_status[side] = data
+        if prev != data:
+            self.get_logger().info(f"[{side}] quest_status rx: {data}")
 
     def snapshot(self) -> Dict[str, Dict]:
         with self._latest_lock:
