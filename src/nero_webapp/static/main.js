@@ -1,4 +1,3 @@
-console.log("=== main.js build: quest-countdown-5 ===");
 // Dual-Nero browser control.
 //
 // Renders two actual Nero arms (not stick figures) using urdf-loader + the
@@ -486,23 +485,12 @@ function connect() {
     statusEl.className = "status disconnected";
     setTimeout(connect, 1000);
   });
-  let _wsMsgCount = 0;
-  let _lastLoggedQuestStatus = {left: null, right: null};
   ws.addEventListener("message", (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
-    _wsMsgCount++;
-    if (_wsMsgCount <= 3) {
-      console.log("ws msg", _wsMsgCount, JSON.stringify(msg).slice(0, 300));
-    }
     if (msg.type === "state" && msg.data) {
       for (const side of ["left", "right"]) {
         const s = msg.data[side];
-        if (s && s.quest_status !== undefined &&
-            s.quest_status !== _lastLoggedQuestStatus[side]) {
-          _lastLoggedQuestStatus[side] = s.quest_status;
-          console.log(`[${side}] quest_status change →`, JSON.stringify(s.quest_status));
-        }
         if (s && s.names && s.positions) {
           updateFeedbackDisplay(side, s.names, s.positions);
         }
@@ -512,9 +500,6 @@ function connect() {
           if (statusEl) {
             // Prominent countdown during CALIBRATING.
             const m = state.match(/countdown=(\d+)/);
-            if (state.includes("CALIBRATING")) {
-              console.log(`[${side}] quest status=`, JSON.stringify(state), "match=", m);
-            }
             if (state.includes("CALIBRATING") && m) {
               statusEl.innerHTML =
                 `<span style="font-size:20px;font-weight:bold;color:#ffb300">` +

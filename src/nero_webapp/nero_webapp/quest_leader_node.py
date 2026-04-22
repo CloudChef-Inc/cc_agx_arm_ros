@@ -419,10 +419,7 @@ class QuestLeaderNode(Node):
                  f"follow={self._follow_on}"]
         if self._state == STATE_CALIBRATING and self._countdown_remaining > 0:
             parts.append(f"countdown={self._countdown_remaining}")
-        data = "; ".join(parts)
-        self._status_pub.publish(String(data=data))
-        if self._state != STATE_IDLE:
-            self.get_logger().info(f"[{self.side}] status publish: {data}")
+        self._status_pub.publish(String(data="; ".join(parts)))
 
 
 def main(args=None) -> None:
