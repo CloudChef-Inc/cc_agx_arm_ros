@@ -614,14 +614,14 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
         req.data = bool(body.get("enabled", False))
         return await _call_quest(side, "preview", req)
 
-    @app.post("/quest_leader/send")
-    async def quest_send(request: Request) -> Dict:
+    @app.post("/quest_leader/follow")
+    async def quest_follow(request: Request) -> Dict:
         from std_srvs.srv import SetBool
         body = await request.json()
         side = body.get("side", "right")
         req = SetBool.Request()
         req.data = bool(body.get("enabled", False))
-        return await _call_quest(side, "send", req)
+        return await _call_quest(side, "follow", req)
 
     @app.get("/stats")
     async def stats() -> Dict:

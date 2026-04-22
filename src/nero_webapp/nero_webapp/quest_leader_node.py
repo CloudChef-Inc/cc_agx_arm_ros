@@ -44,10 +44,11 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger, SetBool
 
 try:
-    from moveit_msgs.srv import GetPositionIK
+    from moveit_msgs.srv import GetPositionIK, GetPositionFK
     from moveit_msgs.msg import PositionIKRequest, RobotState
 except ImportError:
     GetPositionIK = None  # handled at runtime
+    GetPositionFK = None
 
 from scipy.spatial.transform import Rotation as R
 
@@ -106,11 +107,13 @@ class QuestLeaderNode(Node):
         self.declare_parameter("ee_link", "gripper_flange")
         self.declare_parameter("planning_group", "arm")
         self.declare_parameter("ik_service", "/compute_ik")
+        self.declare_parameter("fk_service", "/compute_fk")
 
         self.side: str = self.get_parameter("side").value
         self.ee_link: str = self.get_parameter("ee_link").value
         self.group: str = self.get_parameter("planning_group").value
         ik_srv: str = self.get_parameter("ik_service").value
+        fk_srv: str = self.get_parameter("fk_service").value
 
         if self.side not in ("left", "right"):
             raise ValueError(f"side must be left|right, got {self.side}")
@@ -132,7 +135,7 @@ class QuestLeaderNode(Node):
         self._last_ik_fail_log = 0.0
 
         self._preview_on = False
-        self._send_on = False
+        self._follow_on = False
         self._countdown_remaining = 0
 
         # Topics.
@@ -170,17 +173,21 @@ class QuestLeaderNode(Node):
             self._preview_srv, callback_group=self._cb_group,
         )
         self.create_service(
-            SetBool, f"{ns}/quest_leader/send",
-            self._send_srv, callback_group=self._cb_group,
+            SetBool, f"{ns}/quest_leader/follow",
+            self._follow_srv, callback_group=self._cb_group,
         )
 
-        # IK client.
+        # IK / FK clients.
         if GetPositionIK is None:
             self.get_logger().error("moveit_msgs not available — IK disabled")
             self._ik_client = None
+            self._fk_client = None
         else:
             self._ik_client = self.create_client(
                 GetPositionIK, ik_srv, callback_group=self._cb_group,
+            )
+            self._fk_client = self.create_client(
+                GetPositionFK, fk_srv, callback_group=self._cb_group,
             )
 
         # Periodic loops.
@@ -205,12 +212,19 @@ class QuestLeaderNode(Node):
 
     # ---------- services ----------
     def _calibrate_srv(self, request: Trigger.Request, response: Trigger.Response):
-        self.get_logger().info(f"[{self.side}] calibration requested")
+        """Sim-only calibration. The real arm does NOT move.
+
+        We publish the calibration pose to the ghost topic so the UI
+        shows where to hold the controller, compute ee_ref via /compute_fk
+        from that joint pose (instead of feedback/tcp_pose, which would
+        reflect the real arm's current — wrong — pose), run the 5 s
+        countdown, and snapshot the controller pose as ctrl_ref.
+        """
+        self.get_logger().info(f"[{self.side}] calibration requested (sim-only)")
         self._preview_on = False
-        self._send_on = False
+        self._follow_on = False
         self._state = STATE_CALIBRATING
 
-        # Drive to calibration pose.
         target_q = (CALIBRATION_JOINT_POSE_LEFT if self.side == "left"
                     else CALIBRATION_JOINT_POSE_RIGHT)
         if not self._latest_joint_state:
@@ -218,22 +232,22 @@ class QuestLeaderNode(Node):
             response.success = False
             response.message = "no feedback/joint_states yet"
             return response
+        joint_names = list(self._latest_joint_state.name)
 
-        js = JointState()
-        js.header.stamp = self.get_clock().now().to_msg()
-        js.name = list(self._latest_joint_state.name)
-        js.position = list(target_q)[: len(js.name)]
-        self._cmd_pub.publish(js)
+        # Publish the calibration pose as the ghost (UI preview target).
+        ghost = JointState()
+        ghost.header.stamp = self.get_clock().now().to_msg()
+        ghost.name = joint_names
+        ghost.position = list(target_q)[: len(joint_names)]
+        self._ghost_pub.publish(ghost)
 
-        # Wait for convergence.
-        t0 = time.time()
-        while time.time() - t0 < CONVERGE_TIMEOUT:
-            with self._lock:
-                cur = list(self._latest_joint_state.position) if self._latest_joint_state else []
-            if cur and len(cur) >= len(target_q):
-                if max(abs(a - b) for a, b in zip(cur[: len(target_q)], target_q)) < CONVERGE_TOL:
-                    break
-            time.sleep(0.05)
+        # Derive ee_ref via FK on the calibration joint pose.
+        ee_ref = self._fk_from_joints(joint_names, ghost.position)
+        if ee_ref is None:
+            self._state = STATE_IDLE
+            response.success = False
+            response.message = "FK failed for calibration pose"
+            return response
 
         # 5-second countdown.
         for n in range(COUNTDOWN_S, 0, -1):
@@ -241,29 +255,51 @@ class QuestLeaderNode(Node):
             time.sleep(1.0)
         self._countdown_remaining = 0
 
-        # Snapshot references.
         with self._lock:
             ctrl = self._latest_ctrl
-            tcp = self._latest_tcp
             ctrl_fresh = (time.time() - self._latest_ctrl_ts) < 0.5
 
-        if not ctrl or not ctrl_fresh or not tcp:
+        if not ctrl or not ctrl_fresh:
             self._state = STATE_IDLE
             response.success = False
-            response.message = (
-                f"missing refs at snapshot (ctrl={bool(ctrl)}, "
-                f"fresh={ctrl_fresh}, tcp={bool(tcp)})"
-            )
+            response.message = f"missing ctrl ref at snapshot (fresh={ctrl_fresh})"
             return response
 
         self._ctrl_ref = ctrl
-        self._ee_ref = tcp
-        self._last_ik_solution = None
+        self._ee_ref = ee_ref
+        self._last_ik_solution = list(ghost.position)
         self._state = STATE_READY
-        self.get_logger().info(f"[{self.side}] calibrated; state=READY")
+        self.get_logger().info(f"[{self.side}] calibrated (sim); state=READY")
         response.success = True
         response.message = "calibrated"
         return response
+
+    def _fk_from_joints(self, names: List[str], positions: List[float]) -> Optional[Pose6]:
+        if self._fk_client is None or not self._fk_client.service_is_ready():
+            self.get_logger().warn(f"[{self.side}] /compute_fk not ready")
+            return None
+        req = GetPositionFK.Request()
+        req.header.frame_id = "base_link"
+        req.fk_link_names = [self.ee_link]
+        req.robot_state.joint_state.name = list(names)
+        req.robot_state.joint_state.position = list(positions)
+
+        future = self._fk_client.call_async(req)
+        deadline = time.time() + 2.0
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        if not future.done():
+            return None
+        resp = future.result()
+        if (resp is None or resp.error_code.val != 1
+                or not resp.pose_stamped):
+            return None
+        ps = resp.pose_stamped[0]
+        q = ps.pose.orientation
+        return Pose6(
+            pos=np.array([ps.pose.position.x, ps.pose.position.y, ps.pose.position.z]),
+            rot=R.from_quat([q.x, q.y, q.z, q.w]),
+        )
 
     def _preview_srv(self, request: SetBool.Request, response: SetBool.Response):
         if request.data:
@@ -276,21 +312,21 @@ class QuestLeaderNode(Node):
                 self._state = STATE_ACTIVE
         else:
             self._preview_on = False
-            self._send_on = False
+            self._follow_on = False
             if self._state == STATE_ACTIVE:
                 self._state = STATE_READY
         response.success = True
         response.message = f"preview={'on' if self._preview_on else 'off'}"
         return response
 
-    def _send_srv(self, request: SetBool.Request, response: SetBool.Response):
+    def _follow_srv(self, request: SetBool.Request, response: SetBool.Response):
         if request.data and not self._preview_on:
             response.success = False
             response.message = "enable preview first"
             return response
-        self._send_on = bool(request.data)
+        self._follow_on = bool(request.data)
         response.success = True
-        response.message = f"send={'on' if self._send_on else 'off'}"
+        response.message = f"follow={'on' if self._follow_on else 'off'}"
         return response
 
     # ---------- main loop ----------
@@ -308,12 +344,12 @@ class QuestLeaderNode(Node):
         if ctrl is None:
             return
 
-        # Auto-disarm Send on stream stall.
-        if self._send_on and ctrl_age > STREAM_STALL_S:
+        # Auto-disarm Follow on stream stall.
+        if self._follow_on and ctrl_age > STREAM_STALL_S:
             self.get_logger().warn(
-                f"[{self.side}] Quest stream stalled ({ctrl_age:.2f}s) — disarming Send"
+                f"[{self.side}] Quest stream stalled ({ctrl_age:.2f}s) — disarming Follow"
             )
-            self._send_on = False
+            self._follow_on = False
             return
 
         # Delta.
@@ -393,12 +429,12 @@ class QuestLeaderNode(Node):
         out.name = list(joint_names)
         out.position = ordered[: len(joint_names)]
         self._ghost_pub.publish(out)
-        if self._send_on:
+        if self._follow_on:
             self._cmd_pub.publish(out)
 
     def _publish_status(self) -> None:
         parts = [f"state={self._state}", f"preview={self._preview_on}",
-                 f"send={self._send_on}"]
+                 f"follow={self._follow_on}"]
         if self._state == STATE_CALIBRATING and self._countdown_remaining > 0:
             parts.append(f"countdown={self._countdown_remaining}")
         self._status_pub.publish(String(data="; ".join(parts)))

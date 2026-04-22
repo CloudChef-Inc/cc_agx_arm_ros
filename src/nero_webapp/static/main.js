@@ -341,7 +341,7 @@ function buildSliders() {
     // --- Quest leader buttons --------------------------------------------
     const qCalib   = panels[side].querySelector(".btn-quest-calibrate");
     const qPreview = panels[side].querySelector(".btn-quest-preview");
-    const qSend    = panels[side].querySelector(".btn-quest-send");
+    const qFollow  = panels[side].querySelector(".btn-quest-follow");
 
     async function postQuest(path, body) {
       const r = await fetch(path, {
@@ -372,24 +372,24 @@ function buildSliders() {
         if (d.ok) {
           qPreview.classList.toggle("active", enabling);
           qPreview.textContent = enabling ? "Preview ON" : "Preview";
-          if (!enabling && qSend) {
-            qSend.classList.remove("active");
-            qSend.textContent = "Send (Quest)";
+          if (!enabling && qFollow) {
+            qFollow.classList.remove("active");
+            qFollow.textContent = "Follow";
           }
         } else {
           alert("Preview failed: " + (d.message || d.error || "?"));
         }
       };
     }
-    if (qSend) {
-      qSend.onclick = async () => {
-        const enabling = !qSend.classList.contains("active");
-        const d = await postQuest("/quest_leader/send", { side, enabled: enabling });
+    if (qFollow) {
+      qFollow.onclick = async () => {
+        const enabling = !qFollow.classList.contains("active");
+        const d = await postQuest("/quest_leader/follow", { side, enabled: enabling });
         if (d.ok) {
-          qSend.classList.toggle("active", enabling);
-          qSend.textContent = enabling ? "Send ON (Quest)" : "Send (Quest)";
+          qFollow.classList.toggle("active", enabling);
+          qFollow.textContent = enabling ? "Follow ON" : "Follow";
         } else {
-          alert("Send failed: " + (d.message || d.error || "?"));
+          alert("Follow failed: " + (d.message || d.error || "?"));
         }
       };
     }
@@ -501,13 +501,13 @@ function connect() {
           const state = (s.quest_status || "").toString();
           const ready = state.includes("READY") || state.includes("ACTIVE");
           const pv = document.querySelector(`.btn-quest-preview[data-side="${side}"]`);
-          const sd = document.querySelector(`.btn-quest-send[data-side="${side}"]`);
+          const fl = document.querySelector(`.btn-quest-follow[data-side="${side}"]`);
           if (pv) pv.disabled = !ready;
-          if (sd) sd.disabled = !(pv && pv.classList.contains("active"));
-          // Auto-reflect server-side auto-disarm of Send.
-          if (sd && sd.classList.contains("active") && !state.includes("send=True")) {
-            sd.classList.remove("active");
-            sd.textContent = "Send (Quest)";
+          if (fl) fl.disabled = !(pv && pv.classList.contains("active"));
+          // Auto-reflect server-side auto-disarm of Follow.
+          if (fl && fl.classList.contains("active") && !state.includes("follow=True")) {
+            fl.classList.remove("active");
+            fl.textContent = "Follow";
           }
         }
       }
