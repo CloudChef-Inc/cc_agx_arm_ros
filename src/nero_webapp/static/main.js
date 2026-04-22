@@ -24,8 +24,12 @@ import URDFLoader from "urdf-loader";
 let TORSO_X = 0.185;   // width  (left↔right) — overwritten at boot
 let TORSO_Y = 0.10;    // depth  (front↔back)
 let TORSO_Z = 0.60;    // height (down↔up)
-let SHOULDER_X = 0.0925; // lateral offset of shoulder from centerline
+let SHOULDER_X = 0.0563; // lateral offset of shoulder from centerline
 const SHOULDER_Z = 0.55; // shoulder height above floor
+// Roll of each arm about its own +X axis (rad). Right arm rolls
+// +SHOULDER_TILT, left rolls -SHOULDER_TILT. Set from /torso_config so
+// the xacro/URDF and this rendering stay aligned.
+let SHOULDER_TILT = 20.0 * Math.PI / 180.0;
 
 // ------------ DOM bootstrap ---------------------------------------------
 const statusEl = document.getElementById("status");
@@ -237,6 +241,10 @@ async function buildArms() {
   // Ry(+90°) puts the chain along +X; additional Rx(180°) rolls the arm
   // 180° around its own (now world-X) chain axis so it sits right-side-up.
   rightMount.rotation.set(Math.PI, Math.PI / 2, 0);
+  // Additional roll about the arm's own +X axis (intrinsic), matching
+  // the xacro's shoulder_tilt_deg. rotateX composes onto the current
+  // rotation so the tilt is applied in the arm's local frame.
+  rightMount.rotateX(SHOULDER_TILT);
   rightMount.add(rightRobot);
   rightMount.add(rightGhost);
   scene.add(rightMount);
@@ -244,6 +252,7 @@ async function buildArms() {
   const leftMount = new THREE.Group();
   leftMount.position.set(-SHOULDER_X, 0, SHOULDER_Z);
   leftMount.rotation.y = -Math.PI / 2;
+  leftMount.rotateX(-SHOULDER_TILT);
   leftMount.add(leftRobot);
   leftMount.add(leftGhost);
   scene.add(leftMount);
@@ -807,6 +816,9 @@ async function boot() {
     TORSO_Y = tc.torso_depth;
     TORSO_Z = tc.torso_height;
     SHOULDER_X = TORSO_X / 2.0;
+    if (typeof tc.shoulder_tilt_deg === "number") {
+      SHOULDER_TILT = tc.shoulder_tilt_deg * Math.PI / 180.0;
+    }
     // Update the torso box + shoulder mounts that were created with
     // the initial (possibly stale) defaults.
     torso.geometry.dispose();

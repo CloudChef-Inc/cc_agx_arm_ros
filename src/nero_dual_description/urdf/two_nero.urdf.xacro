@@ -17,19 +17,25 @@
   <!-- ===== Mount geometry — set via launch args so there's one
        source of truth (the launch file) for both the URDF and the
        webapp's 3D rendering. ===== -->
-  <xacro:arg name="torso_depth"  default="0.10"/>
-  <xacro:arg name="torso_width"  default="0.185"/>
-  <xacro:arg name="torso_height" default="0.60"/>
+  <xacro:arg name="torso_depth"       default="0.10"/>
+  <xacro:arg name="torso_width"       default="0.1126"/>
+  <xacro:arg name="torso_height"      default="0.60"/>
+  <xacro:arg name="shoulder_tilt_deg" default="20.0"/>
   <xacro:property name="torso_depth"       value="$(arg torso_depth)"/>
   <xacro:property name="torso_width"       value="$(arg torso_width)"/>
   <xacro:property name="torso_height"      value="$(arg torso_height)"/>
+  <xacro:property name="shoulder_tilt_deg" value="$(arg shoulder_tilt_deg)"/>
+  <xacro:property name="shoulder_tilt"     value="${shoulder_tilt_deg * pi / 180.0}"/>
   <xacro:property name="shoulder_y_offset" value="${torso_width / 2.0}"/>
   <xacro:property name="shoulder_z"        value="${torso_height - 0.05}"/>
 
   <!-- Roll each base outward so the arm's +Z axis points along ±Y instead
-       of +Z. -pi/2 for the left shoulder, +pi/2 for the right. -->
-  <xacro:property name="left_shoulder_rpy"  value="${-pi / 2} 0 0"/>
-  <xacro:property name="right_shoulder_rpy" value="${ pi / 2} 0 0"/>
+       of +Z. ±pi/2 gets the arms horizontal; shoulder_tilt adds a roll
+       around the arm's own +X axis (the shoulder "cant" of the real
+       mount). Since the first rotation is itself around X, adding to the
+       same roll composes cleanly with no axis remapping. -->
+  <xacro:property name="left_shoulder_rpy"  value="${-pi / 2 - shoulder_tilt} 0 0"/>
+  <xacro:property name="right_shoulder_rpy" value="${ pi / 2 + shoulder_tilt} 0 0"/>
 
   <!-- ===== World + torso ===== -->
   <link name="world"/>

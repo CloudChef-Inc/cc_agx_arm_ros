@@ -83,8 +83,8 @@ def generate_launch_description() -> LaunchDescription:
     # Torso dimensions — single source of truth. Flows to both the
     # xacro (URDF model) and the webapp (3D rendering).
     torso_width_arg = DeclareLaunchArgument(
-        "torso_width", default_value="0.185",
-        description="Distance between arm mounting plates (metres).",
+        "torso_width", default_value="0.1126",
+        description="Distance between the two arm base-link origins (metres).",
     )
     torso_depth_arg = DeclareLaunchArgument(
         "torso_depth", default_value="0.10",
@@ -93,6 +93,11 @@ def generate_launch_description() -> LaunchDescription:
     torso_height_arg = DeclareLaunchArgument(
         "torso_height", default_value="0.60",
         description="Torso height (metres).",
+    )
+    shoulder_tilt_arg = DeclareLaunchArgument(
+        "shoulder_tilt_deg", default_value="20.0",
+        description="Roll of each arm about its own +X axis (deg). "
+                    "Right arm tilts +shoulder_tilt_deg, left tilts -shoulder_tilt_deg.",
     )
 
     quest_host_arg = DeclareLaunchArgument(
@@ -121,6 +126,7 @@ def generate_launch_description() -> LaunchDescription:
                 " torso_width:=", LaunchConfiguration("torso_width"),
                 " torso_depth:=", LaunchConfiguration("torso_depth"),
                 " torso_height:=", LaunchConfiguration("torso_height"),
+                " shoulder_tilt_deg:=", LaunchConfiguration("shoulder_tilt_deg"),
             ]), value_type=str
         ),
     }
@@ -176,9 +182,10 @@ def generate_launch_description() -> LaunchDescription:
             "right_fisheye_device":   LaunchConfiguration("right_fisheye_device"),
             "left_realsense_serial":  LaunchConfiguration("left_realsense_serial"),
             "right_realsense_serial": LaunchConfiguration("right_realsense_serial"),
-            "torso_width":  LaunchConfiguration("torso_width"),
-            "torso_depth":  LaunchConfiguration("torso_depth"),
-            "torso_height": LaunchConfiguration("torso_height"),
+            "torso_width":       LaunchConfiguration("torso_width"),
+            "torso_depth":       LaunchConfiguration("torso_depth"),
+            "torso_height":      LaunchConfiguration("torso_height"),
+            "shoulder_tilt_deg": LaunchConfiguration("shoulder_tilt_deg"),
         }],
     )
 
@@ -261,6 +268,7 @@ def generate_launch_description() -> LaunchDescription:
         torso_width_arg,
         torso_depth_arg,
         torso_height_arg,
+        shoulder_tilt_arg,
         quest_host_arg,
         quest_port_arg,
         quest_debug_arg,
