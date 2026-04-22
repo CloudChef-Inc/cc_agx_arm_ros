@@ -104,14 +104,25 @@ class QuestLeaderNode(Node):
         super().__init__("quest_leader_node")
 
         self.declare_parameter("side", "right")  # "left" or "right"
-        self.declare_parameter("ee_link", "gripper_flange")
+        # Blank → derive from side as "{side}_gripper_flange"/"{side}_".
+        self.declare_parameter("ee_link", "")
+        self.declare_parameter("joint_prefix", "")
         self.declare_parameter("planning_group", "arm")
+        self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("ik_service", "/compute_ik")
         self.declare_parameter("fk_service", "/compute_fk")
 
         self.side: str = self.get_parameter("side").value
-        self.ee_link: str = self.get_parameter("ee_link").value
+        self.ee_link: str = (
+            self.get_parameter("ee_link").value
+            or f"{self.side}_gripper_flange"
+        )
+        self.joint_prefix: str = (
+            self.get_parameter("joint_prefix").value
+            or f"{self.side}_"
+        )
         self.group: str = self.get_parameter("planning_group").value
+        self.base_frame: str = self.get_parameter("base_frame").value
         ik_srv: str = self.get_parameter("ik_service").value
         fk_srv: str = self.get_parameter("fk_service").value
 
@@ -194,7 +205,21 @@ class QuestLeaderNode(Node):
         self.create_timer(1.0 / IK_RATE_HZ, self._ik_tick, callback_group=self._cb_group)
         self.create_timer(0.2, self._publish_status, callback_group=self._cb_group)
 
-        self.get_logger().info(f"quest_leader_node up (side={self.side}, ee={self.ee_link})")
+        self.get_logger().info(
+            f"quest_leader_node up (side={self.side}, ee={self.ee_link}, "
+            f"joint_prefix={self.joint_prefix!r}, base_frame={self.base_frame})"
+        )
+
+    # Prefixed names used when talking to MoveIt (dual-arm URDF).
+    def _prefixed(self, names: List[str]) -> List[str]:
+        return [
+            n if n.startswith(self.joint_prefix) else f"{self.joint_prefix}{n}"
+            for n in names
+        ]
+
+    def _unprefixed(self, names: List[str]) -> List[str]:
+        p = self.joint_prefix
+        return [n[len(p):] if n.startswith(p) else n for n in names]
 
     # ---------- subscriptions ----------
     def _ctrl_cb(self, msg: PoseStamped) -> None:
@@ -234,15 +259,17 @@ class QuestLeaderNode(Node):
             return response
         joint_names = list(self._latest_joint_state.name)
 
-        # Publish the calibration pose as the ghost (UI preview target).
+        # Publish the calibration pose as the ghost (UI preview target) —
+        # unprefixed names, since the webapp + arm driver speak unprefixed.
         ghost = JointState()
         ghost.header.stamp = self.get_clock().now().to_msg()
         ghost.name = joint_names
         ghost.position = list(target_q)[: len(joint_names)]
         self._ghost_pub.publish(ghost)
 
-        # Derive ee_ref via FK on the calibration joint pose.
-        ee_ref = self._fk_from_joints(joint_names, ghost.position)
+        # Derive ee_ref via FK on the calibration joint pose — MoveIt
+        # expects prefixed names (left_joint1.., right_joint1..).
+        ee_ref = self._fk_from_joints(self._prefixed(joint_names), ghost.position)
         if ee_ref is None:
             self._state = STATE_IDLE
             response.success = False
@@ -282,7 +309,7 @@ class QuestLeaderNode(Node):
             self.get_logger().error(f"[{self.side}] /compute_fk service not available")
             return None
         req = GetPositionFK.Request()
-        req.header.frame_id = "base_link"
+        req.header.frame_id = self.base_frame
         req.fk_link_names = [self.ee_link]
         req.robot_state.joint_state.name = list(names)
         req.robot_state.joint_state.position = list(positions)
@@ -391,9 +418,11 @@ class QuestLeaderNode(Node):
         ikr.timeout.sec = 0
         ikr.timeout.nanosec = 20_000_000  # 20 ms
 
+        # Seed with prefixed names so MoveIt recognizes the joints.
         seed = RobotState()
-        seed.joint_state.name = list(js.name)
-        if self._last_ik_solution and len(self._last_ik_solution) == len(js.name):
+        unprefixed_js_names = list(js.name)
+        seed.joint_state.name = self._prefixed(unprefixed_js_names)
+        if self._last_ik_solution and len(self._last_ik_solution) == len(unprefixed_js_names):
             seed.joint_state.position = list(self._last_ik_solution)
         else:
             seed.joint_state.position = list(js.position)
@@ -401,7 +430,7 @@ class QuestLeaderNode(Node):
 
         ps = PoseStamped()
         ps.header.stamp = self.get_clock().now().to_msg()
-        ps.header.frame_id = "base_link"
+        ps.header.frame_id = self.base_frame
         ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = target_pos
         qx, qy, qz, qw = target_rot.as_quat()
         ps.pose.orientation.x = qx
@@ -412,7 +441,9 @@ class QuestLeaderNode(Node):
         req.ik_request = ikr
 
         future = self._ik_client.call_async(req)
-        future.add_done_callback(lambda f: self._on_ik_done(f, js.name))
+        future.add_done_callback(
+            lambda f: self._on_ik_done(f, unprefixed_js_names)
+        )
 
     def _on_ik_done(self, future, joint_names: List[str]) -> None:
         try:
@@ -428,14 +459,13 @@ class QuestLeaderNode(Node):
                 self._last_ik_fail_log = now
             return
 
+        # MoveIt returns prefixed names; reorder into the unprefixed
+        # (arm-driver / webapp) order.
         sol_names = list(resp.solution.joint_state.name)
         sol_pos = list(resp.solution.joint_state.position)
-        # Reorder into joint_names order.
+        prefixed_target = self._prefixed(joint_names)
         idx = {n: i for i, n in enumerate(sol_names)}
-        try:
-            ordered = [sol_pos[idx[n]] for n in joint_names if n in idx]
-        except KeyError:
-            ordered = sol_pos
+        ordered = [sol_pos[idx[n]] for n in prefixed_target if n in idx]
         if len(ordered) < len(joint_names):
             return
 
@@ -443,7 +473,7 @@ class QuestLeaderNode(Node):
 
         out = JointState()
         out.header.stamp = self.get_clock().now().to_msg()
-        out.name = list(joint_names)
+        out.name = list(joint_names)  # unprefixed — arm driver expects this
         out.position = ordered[: len(joint_names)]
         self._ghost_pub.publish(out)
         if self._follow_on:
