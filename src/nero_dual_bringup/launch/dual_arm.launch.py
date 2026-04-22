@@ -226,7 +226,7 @@ def generate_launch_description() -> LaunchDescription:
         executable="quest_leader_node",
         name="quest_leader_left",
         output="screen",
-        parameters=[{"side": "left", "ee_link": "gripper_flange", "planning_group": "arm"}],
+        parameters=[{"side": "left", "ee_link": "tcp_link", "planning_group": "arm"}],
     )
     quest_leader_right = Node(
         package="nero_webapp",
