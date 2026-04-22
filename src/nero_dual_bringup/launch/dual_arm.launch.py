@@ -38,7 +38,7 @@ def generate_launch_description() -> LaunchDescription:
         description="CAN interface for the right arm (stable udev name).",
     )
     http_port_arg = DeclareLaunchArgument(
-        "http_port", default_value="8080",
+        "http_port", default_value="8000",
         description="HTTP port for the nero_webapp UI.",
     )
     http_host_arg = DeclareLaunchArgument(
