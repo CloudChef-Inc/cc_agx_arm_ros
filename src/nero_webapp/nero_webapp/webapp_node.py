@@ -382,7 +382,10 @@ class WebappNode(Node):
             else:
                 names.append("gripper")
                 positions.append(width_m)
-            snap[side] = {"names": names, "positions": positions}
+            # Update names/positions in place — wholesale reassignment
+            # would wipe quest_ghost / quest_status set above.
+            snap[side]["names"] = names
+            snap[side]["positions"] = positions
         return snap
 
     # ---- command path --------------------------------------------------
