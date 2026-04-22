@@ -113,14 +113,11 @@ class QuestLeaderNode(Node):
         self.declare_parameter("fk_service", "/compute_fk")
 
         self.side: str = self.get_parameter("side").value
-        self.ee_link: str = (
-            self.get_parameter("ee_link").value
-            or f"{self.side}_gripper_flange"
-        )
-        self.joint_prefix: str = (
-            self.get_parameter("joint_prefix").value
-            or f"{self.side}_"
-        )
+        # agx_arm_moveit is a single-arm config (unprefixed joints,
+        # tip=tcp_link). Both quest_leader_{left,right} share one
+        # move_group instance; kinematics are symmetric.
+        self.ee_link: str = self.get_parameter("ee_link").value or "tcp_link"
+        self.joint_prefix: str = self.get_parameter("joint_prefix").value
         self.group: str = self.get_parameter("planning_group").value
         self.base_frame: str = self.get_parameter("base_frame").value
         ik_srv: str = self.get_parameter("ik_service").value

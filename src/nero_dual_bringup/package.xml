@@ -14,6 +14,7 @@
   <exec_depend>agx_arm_ctrl</exec_depend>
   <exec_depend>nero_dual_description</exec_depend>
   <exec_depend>nero_webapp</exec_depend>
+  <exec_depend>agx_arm_moveit</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

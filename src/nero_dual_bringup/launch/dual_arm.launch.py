@@ -233,7 +233,26 @@ def generate_launch_description() -> LaunchDescription:
         executable="quest_leader_node",
         name="quest_leader_right",
         output="screen",
-        parameters=[{"side": "right", "ee_link": "gripper_flange", "planning_group": "arm"}],
+        parameters=[{"side": "right", "ee_link": "tcp_link", "planning_group": "arm"}],
+    )
+
+    # MoveIt move_group — needed for /compute_ik + /compute_fk used by
+    # the quest_leader nodes. Single-arm Nero config (joints joint1..7,
+    # tip=tcp_link). Both sides share this instance; kinematics are
+    # symmetric so the joint solution is valid for either arm.
+    move_group_launch_path = PathJoinSubstitution([
+        FindPackageShare("agx_arm_moveit"),
+        "launch", "move_group.launch.py",
+    ])
+    move_group = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([move_group_launch_path]),
+        launch_arguments={
+            "arm_type": "nero",
+            "effector_type": "none",
+            "follow": "false",
+            "allow_trajectory_execution": "false",
+            "publish_monitored_planning_scene": "false",
+        }.items(),
     )
 
     return LaunchDescription([
@@ -262,4 +281,5 @@ def generate_launch_description() -> LaunchDescription:
         quest_teleop,
         quest_leader_left,
         quest_leader_right,
+        move_group,
     ])
