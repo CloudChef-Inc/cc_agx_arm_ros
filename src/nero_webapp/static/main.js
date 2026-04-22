@@ -43,6 +43,10 @@ const sliderState = {
 };
 const armRobots = { left: null, right: null };
 const ghostRobots = { left: null, right: null };
+// Tracks the last quest_status string per side so we can fire one-shot
+// transitions (e.g. move the slider arm model to the calibration pose
+// the instant CALIBRATING begins, not on every subsequent frame).
+const prevQuestStatus = { left: "", right: "" };
 
 // ------------ three.js scene --------------------------------------------
 // Switch the world to Z-up before creating any object whose orientation
@@ -539,6 +543,31 @@ function connect() {
           const state = (s.quest_status || "").toString();
           const ghost = ghostRobots[side];
           if (ghost) ghost.visible = state.includes("preview=True");
+          // On the transition into CALIBRATING, push the calibration joint
+          // pose (carried on the ghost topic and broadcast immediately by
+          // the node) into the slider arm model. Follow-on: if the Follow
+          // button is active, also send it to the real arm.
+          const prev = prevQuestStatus[side];
+          const enteringCalibrate =
+            state.includes("CALIBRATING") && !prev.includes("CALIBRATING");
+          if (enteringCalibrate && s.quest_ghost &&
+              s.quest_ghost.names && s.quest_ghost.positions) {
+            const byName = {};
+            for (let i = 0; i < s.quest_ghost.names.length; i++) {
+              byName[s.quest_ghost.names[i]] = s.quest_ghost.positions[i];
+            }
+            for (let i = 0; i < jointNames.length; i++) {
+              const v = byName[jointNames[i]];
+              if (typeof v === "number") setSlider(side, i, v);
+            }
+            applyArmPose(side);
+            const followBtn = document.querySelector(
+              `.btn-quest-follow[data-side="${side}"]`);
+            if (followBtn && followBtn.classList.contains("active")) {
+              sendCommand(side);
+            }
+          }
+          prevQuestStatus[side] = state;
           if (statusEl) {
             // Prominent countdown during CALIBRATING.
             const m = state.match(/countdown=(\d+)/);
