@@ -275,24 +275,41 @@ class QuestLeaderNode(Node):
         return response
 
     def _fk_from_joints(self, names: List[str], positions: List[float]) -> Optional[Pose6]:
-        if self._fk_client is None or not self._fk_client.service_is_ready():
-            self.get_logger().warn(f"[{self.side}] /compute_fk not ready")
+        if self._fk_client is None:
+            self.get_logger().error(f"[{self.side}] FK client not constructed")
+            return None
+        if not self._fk_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error(f"[{self.side}] /compute_fk service not available")
             return None
         req = GetPositionFK.Request()
         req.header.frame_id = "base_link"
         req.fk_link_names = [self.ee_link]
         req.robot_state.joint_state.name = list(names)
         req.robot_state.joint_state.position = list(positions)
+        self.get_logger().info(
+            f"[{self.side}] FK request: link={self.ee_link} "
+            f"names={list(names)} positions={list(positions)}"
+        )
 
         future = self._fk_client.call_async(req)
         deadline = time.time() + 2.0
         while not future.done() and time.time() < deadline:
             time.sleep(0.01)
         if not future.done():
+            self.get_logger().error(f"[{self.side}] FK call timed out")
             return None
         resp = future.result()
-        if (resp is None or resp.error_code.val != 1
-                or not resp.pose_stamped):
+        if resp is None:
+            self.get_logger().error(f"[{self.side}] FK response was None")
+            return None
+        if resp.error_code.val != 1:
+            self.get_logger().error(
+                f"[{self.side}] FK error_code={resp.error_code.val} "
+                f"(1=SUCCESS; see moveit_msgs/MoveItErrorCodes)"
+            )
+            return None
+        if not resp.pose_stamped:
+            self.get_logger().error(f"[{self.side}] FK returned no pose_stamped")
             return None
         ps = resp.pose_stamped[0]
         q = ps.pose.orientation
