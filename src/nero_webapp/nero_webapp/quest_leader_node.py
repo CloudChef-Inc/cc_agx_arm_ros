@@ -319,11 +319,13 @@ class QuestLeaderNode(Node):
         # T=0: snapshot controller pose, transition to READY.
         with self._lock:
             ctrl = self._latest_ctrl
-            ctrl_fresh = (time.time() - self._latest_ctrl_ts) < 0.5
-        if not ctrl or not ctrl_fresh:
+            ctrl_ts = self._latest_ctrl_ts
+        age = time.time() - ctrl_ts if ctrl_ts else float("inf")
+        ctrl_fresh = ctrl is not None and age < 0.5
+        if not ctrl_fresh:
             self.get_logger().error(
                 f"[{self.side}] calibration failed: no fresh controller pose "
-                f"(fresh={ctrl_fresh})"
+                f"(have_ctrl={ctrl is not None}, age={age:.2f}s)"
             )
             self._state = STATE_IDLE
             return

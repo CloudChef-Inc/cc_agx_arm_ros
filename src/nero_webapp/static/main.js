@@ -500,6 +500,9 @@ function connect() {
           if (statusEl) {
             // Prominent countdown during CALIBRATING.
             const m = state.match(/countdown=(\d+)/);
+            if (state.includes("CALIBRATING")) {
+              console.log(`[${side}] quest status=`, JSON.stringify(state), "match=", m);
+            }
             if (state.includes("CALIBRATING") && m) {
               statusEl.innerHTML =
                 `<span style="font-size:20px;font-weight:bold;color:#ffb300">` +
