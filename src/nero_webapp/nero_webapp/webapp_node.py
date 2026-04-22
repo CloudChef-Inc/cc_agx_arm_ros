@@ -597,7 +597,9 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
         if not client.wait_for_service(timeout_sec=1.0):
             return {"ok": False, "error": f"quest_leader/{kind} for {side} not running"}
         future = client.call_async(req)
-        deadline = time.time() + 3.0
+        # Calibrate blocks for the full 5 s countdown before returning.
+        timeout_s = 10.0 if kind == "calibrate" else 3.0
+        deadline = time.time() + timeout_s
         while not future.done() and time.time() < deadline:
             await _asyncio.sleep(0.05)
         if not future.done():
