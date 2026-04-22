@@ -436,7 +436,16 @@ class WebappNode(Node):
 def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
     app = FastAPI()
 
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    # Starlette's StaticFiles refuses to serve files whose realpath escapes
+    # the mount directory. With `colcon build --symlink-install`, the files
+    # in install/share/.../static/ are symlinks to src/.../static/, which
+    # trips that check. Mount the resolved parent so the realpath lands
+    # inside the mount root in both symlink-install and plain builds.
+    resolved_static = static_dir
+    probe = static_dir / "index.html"
+    if probe.is_symlink() or probe.exists():
+        resolved_static = probe.resolve().parent
+    app.mount("/static", StaticFiles(directory=str(resolved_static)), name="static")
 
     # Expose the upstream agx_arm_description share dir so the browser can
     # fetch the Nero URDF + meshes directly (DAE visual meshes render the
