@@ -16,6 +16,10 @@ Setting any device path to an empty string cleanly disables that
 specific device — useful for bringing up one arm at a time during
 hardware work.
 """
+import os
+import signal
+import subprocess
+import time
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
@@ -28,7 +32,54 @@ from launch_ros.descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
+# Process name fragments that belong to a previous dual-arm launch.
+# A stale arm driver on the CAN bus silently eats every /control command
+# (two drivers publish motor frames, the motor listens to whichever
+# arrived last), so we kill any leftover before bringing a new one up.
+_STALE_PROCESS_PATTERNS = (
+    "agx_arm_ctrl_single_node",
+    "gravity_comp",
+    "webapp_node",
+    "quest_leader_node",
+    "quest_teleop_node",
+    "robot_state_publisher",
+)
+
+
+def _reap_stale_processes() -> None:
+    """Kill any leftover dual-arm processes from a prior launch.
+
+    Runs synchronously in the launch loader so all nodes declared below
+    start against a clean graph. Ignores failures (nothing matching is
+    the happy path). Skips our own PID so we don't self-terminate if
+    this file is ever re-used inside an active process.
+    """
+    self_pid = os.getpid()
+    for pattern in _STALE_PROCESS_PATTERNS:
+        try:
+            out = subprocess.check_output(
+                ["pgrep", "-f", pattern], text=True
+            )
+        except subprocess.CalledProcessError:
+            continue  # no match
+        for line in out.splitlines():
+            try:
+                pid = int(line.strip())
+            except ValueError:
+                continue
+            if pid == self_pid:
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    # Give CAN sockets and DDS discovery a beat to settle before the new
+    # drivers try to claim them.
+    time.sleep(1.5)
+
+
 def generate_launch_description() -> LaunchDescription:
+    _reap_stale_processes()
     left_can_arg = DeclareLaunchArgument(
         "left_can", default_value="can_left",
         description="CAN interface for the left arm (stable udev name).",
