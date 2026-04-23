@@ -113,13 +113,37 @@ class QuestLeaderNode(Node):
         self.declare_parameter("side", "right")
         self.declare_parameter("ee_link", "gripper_flange")
         self.declare_parameter("urdf_path", "")
+        # Shoulder tilt about the arm's +X axis (degrees). Combined with
+        # the ±π/2 yaw the arm is mounted at, this fully describes the
+        # rotation from the dual-arm torso frame (= robot world) to the
+        # single-arm URDF base_link. Used to rotate the controller
+        # delta `dp` from quest/robot-world into base_link before adding
+        # to the FK'd `ee_ref`.
+        self.declare_parameter("shoulder_tilt_deg", 20.0)
 
         self.side: str = self.get_parameter("side").value
         self.ee_link: str = self.get_parameter("ee_link").value
         urdf_path: str = self.get_parameter("urdf_path").value
+        shoulder_tilt_deg: float = float(
+            self.get_parameter("shoulder_tilt_deg").value
+        )
 
         if self.side not in ("left", "right"):
             raise ValueError(f"side must be left|right, got {self.side}")
+
+        # Mount rotation (robot-world → base_link). Matches the xacro:
+        #   right: rpy = "(pi/2 + tilt) 0 0"   — roll +110° about +X
+        #   left : rpy = "-(pi/2 + tilt) 0 0"  — roll −110° about +X
+        # URDF rpy = fixed-axis (extrinsic) xyz → scipy 'xyz'.
+        shoulder_tilt = math.radians(shoulder_tilt_deg)
+        roll = (math.pi / 2.0) + shoulder_tilt
+        if self.side == "left":
+            roll = -roll
+        self._R_mount: R = R.from_euler("xyz", [roll, 0.0, 0.0])
+        self._R_mount_inv: R = self._R_mount.inv()
+        self.get_logger().info(
+            f"[{self.side}] mount rpy = ({math.degrees(roll):.2f}, 0, 0) deg"
+        )
 
         if not urdf_path:
             urdf_path = str(
@@ -398,12 +422,22 @@ class QuestLeaderNode(Node):
             self._follow_on = False
             return
 
-        dp = ctrl.pos - self._ctrl_ref.pos
-        dr = self._ctrl_ref.rot.inv() * ctrl.rot
-        dp, dr = _clamp_delta(dp, dr)
+        # Delta in robot-world (= quest-world for now: no transform
+        # applied between the two; the Quest stream is treated as
+        # already in robot-world coordinates).
+        dp_world = ctrl.pos - self._ctrl_ref.pos
+        dr_world = ctrl.rot * self._ctrl_ref.rot.inv()
+        dp_world, dr_world = _clamp_delta(dp_world, dr_world)
 
-        target_pos = self._ee_ref.pos + dp
-        target_rot = self._ee_ref.rot * dr
+        # Rotate delta into this arm's base_link frame, because
+        # self._ee_ref comes from FK on the single-arm URDF and is
+        # expressed in base_link.
+        dp_base = self._R_mount_inv.apply(dp_world)
+        # Conjugation: world rotation expressed in base_link.
+        dr_base = self._R_mount_inv * dr_world * self._R_mount
+
+        target_pos = self._ee_ref.pos + dp_base
+        target_rot = dr_base * self._ee_ref.rot
 
         seed = (self._last_ik_solution
                 if self._last_ik_solution is not None
@@ -417,7 +451,8 @@ class QuestLeaderNode(Node):
                     f"[{self.side}] IK did not converge (err={err_norm:.4f}) "
                     f"target_pos={target_pos.tolist()} "
                     f"ee_ref_pos={self._ee_ref.pos.tolist()} "
-                    f"dp={dp.tolist()} "
+                    f"dp_world={dp_world.tolist()} "
+                    f"dp_base={dp_base.tolist()} "
                     f"seed_ee_pos={seed_ee.pos.tolist()} "
                     f"seed_q={seed.tolist()}"
                 )

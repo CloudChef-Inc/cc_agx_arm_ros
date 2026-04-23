@@ -291,6 +291,9 @@ def generate_launch_description() -> LaunchDescription:
             "side": "left",
             "ee_link": "gripper_flange",
             "urdf_path": nero_urdf,
+            "shoulder_tilt_deg": ParameterValue(
+                LaunchConfiguration("shoulder_tilt_deg"), value_type=float
+            ),
         }],
     )
     quest_leader_right = Node(
@@ -302,6 +305,9 @@ def generate_launch_description() -> LaunchDescription:
             "side": "right",
             "ee_link": "gripper_flange",
             "urdf_path": nero_urdf,
+            "shoulder_tilt_deg": ParameterValue(
+                LaunchConfiguration("shoulder_tilt_deg"), value_type=float
+            ),
         }],
     )
 
