@@ -52,15 +52,22 @@ const ghostRobots = { left: null, right: null };
 // the instant CALIBRATING begins, not on every subsequent frame).
 const prevQuestStatus = { left: "", right: "" };
 
-// Debug-trajectory visualisation. Mirrors the constants in
-// quest_teleop_node._debug_pose so what the UI draws matches what the
-// teleop node publishes. The circle is drawn in each arm's base_link
-// frame because that is also how quest_leader_node consumes `dp`
-// (added directly to ee_ref, which comes from FK in base_link).
-const DEBUG_CIRCLE_Y_OFFSET = -0.20;
+// Debug-trajectory visualisation. Circles are drawn in ROBOT WORLD
+// frame (scene root) — +X right, +Y front, +Z up per the axes helper
+// on the torso — so both arms' targets are symmetric in the space the
+// operator reasons about, not in each arm's ±110°-rolled base_link.
+// Per-side offset from the calibration EE position (metres, world):
+//   both:    -0.20 Y  (20 cm toward the back)
+//   both:    -0.40 Z  (40 cm down)
+//   left arm:  +0.10 X  (10 cm toward the right / centreline)
+//   right arm: -0.10 X  (10 cm toward the left  / centreline)
 const DEBUG_CIRCLE_RADIUS   = 0.03;
 const DEBUG_CIRCLE_PERIOD_S = 8.0;
 const DEBUG_CIRCLE_RAMP_S   = 2.0;
+const DEBUG_CIRCLE_OFFSET = {
+  left:  new THREE.Vector3(+0.10, -0.20, -0.40),
+  right: new THREE.Vector3(-0.10, -0.20, -0.40),
+};
 const debugCircles = { left: null, right: null }; // THREE.Group per side
 const debugMarkers = { left: null, right: null }; // the moving sphere
 const debugMotionStart = { left: null, right: null }; // seconds since epoch
@@ -236,35 +243,35 @@ function makeGhost(robot) {
 
 function buildDebugCircle(side) {
   // Called once calibration has driven the ghost to the calibration
-  // pose. Reads the ghost's gripper_flange world position, converts to
-  // base_link-local, and draws a ring at (flange + (0, -0.20, 0))
-  // lying in the XZ plane — the exact same geometry the debug
-  // controller will trace through `dp`.
-  const robot = armRobots[side];
+  // pose. Reads the ghost's gripper_flange WORLD position and places
+  // the ring at (ee_world + per-side offset), in the robot-world
+  // frame (the scene itself). Keeps both arms' circles symmetric in
+  // the operator's frame regardless of each arm's mount rotation.
   const ghost = ghostRobots[side];
-  if (!robot || !ghost) return;
+  if (!ghost) return;
   const flange = ghost.links && ghost.links["gripper_flange"];
   if (!flange) return;
 
   ghost.updateMatrixWorld(true);
-  robot.updateMatrixWorld(true);
-  const worldPos = new THREE.Vector3();
-  flange.getWorldPosition(worldPos);
-  const eeLocal = robot.worldToLocal(worldPos.clone()); // in base_link
+  const eeWorld = new THREE.Vector3();
+  flange.getWorldPosition(eeWorld);
+
+  const off = DEBUG_CIRCLE_OFFSET[side];
+  const centreWorld = eeWorld.clone().add(off);
 
   // Tear down any previous circle on this side.
   if (debugCircles[side]) {
-    robot.remove(debugCircles[side]);
+    scene.remove(debugCircles[side]);
     debugCircles[side] = null;
     debugMarkers[side] = null;
   }
 
   const group = new THREE.Group();
-  group.position.copy(eeLocal);
-  group.position.y += DEBUG_CIRCLE_Y_OFFSET; // circle centre
+  group.position.copy(centreWorld); // group origin = circle centre (world)
+  // No rotation: group is axis-aligned with the world frame.
 
-  // Torus lies in XY by default (normal = +Z). Rotate so normal = +Y,
-  // matching the XZ-plane circle in quest_teleop_node._debug_pose.
+  // Torus lies in XY by default (normal = +Z). Rotate about +X by 90°
+  // so the ring lies in the world XZ plane (normal = world -Y).
   const ring = new THREE.Mesh(
     new THREE.TorusGeometry(DEBUG_CIRCLE_RADIUS, 0.0015, 8, 96),
     new THREE.MeshBasicMaterial({
@@ -275,7 +282,6 @@ function buildDebugCircle(side) {
   ring.renderOrder = 600;
   group.add(ring);
 
-  // Small dot at the centre of the circle.
   const centre = new THREE.Mesh(
     new THREE.SphereGeometry(0.005, 10, 10),
     new THREE.MeshBasicMaterial({ color: 0x00e0ff, depthWrite: false }),
@@ -283,11 +289,10 @@ function buildDebugCircle(side) {
   centre.renderOrder = 600;
   group.add(centre);
 
-  // Line from calibration EE to circle centre, visualising the 20 cm
-  // -Y offset. Line endpoints in the group's local frame.
+  // EE in group-local coords = ee_world - centre_world = -offset.
+  const eeLocal = off.clone().negate();
   const lineGeom = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, -DEBUG_CIRCLE_Y_OFFSET, 0), // ee_ref
-    new THREE.Vector3(0, 0, 0),                      // circle centre
+    eeLocal, new THREE.Vector3(0, 0, 0),
   ]);
   const line = new THREE.Line(
     lineGeom,
@@ -300,36 +305,34 @@ function buildDebugCircle(side) {
   line.renderOrder = 600;
   group.add(line);
 
-  // The moving marker — position updated in the animate loop while the
-  // side's debug trajectory is active.
   const marker = new THREE.Mesh(
     new THREE.SphereGeometry(0.012, 12, 12),
     new THREE.MeshBasicMaterial({ color: 0xff3b3b, depthWrite: false }),
   );
   marker.renderOrder = 601;
-  marker.position.set(DEBUG_CIRCLE_RADIUS, 0, 0); // phase-0 start
+  marker.position.copy(eeLocal); // rest at EE
   group.add(marker);
   debugMarkers[side] = marker;
 
-  robot.add(group);
+  scene.add(group);
   debugCircles[side] = group;
 }
 
 function updateDebugMarkers() {
-  // Mirrors quest_teleop_node._debug_pose: smoothstep ramp 0→1 over
-  // RAMP_S, then steady-state circle of RADIUS in the XZ plane around
-  // the centre (ee_ref + (0,-0.20,0)). Phase starts at the moment the
-  // side's Preview toggle went True (tracked via prevQuestStatus).
+  // Smoothstep ramp 0→1 over RAMP_S, then a circle of RADIUS in the
+  // world XZ plane around the centre (ee_world + per-side offset).
+  // During the ramp the marker interpolates from ee_world toward the
+  // circle, so there's no jump. Phase starts the instant the side's
+  // Preview toggle goes True.
   const now = performance.now() / 1000.0;
   for (const side of ["left", "right"]) {
     const marker = debugMarkers[side];
     if (!marker) continue;
+    const off = DEBUG_CIRCLE_OFFSET[side];
+    const eeLocal = off.clone().negate(); // EE in group coords
     const start = debugMotionStart[side];
     if (start === null) {
-      // Marker rests at the calibration EE (in group-local coords:
-      // +(-DEBUG_CIRCLE_Y_OFFSET) along +Y, since the group origin is
-      // the circle centre offset in -Y from the EE).
-      marker.position.set(0, -DEBUG_CIRCLE_Y_OFFSET, 0);
+      marker.position.copy(eeLocal);
       marker.visible = true;
       continue;
     }
@@ -337,11 +340,12 @@ function updateDebugMarkers() {
     let s = Math.max(0, Math.min(1, t / DEBUG_CIRCLE_RAMP_S));
     s = s * s * (3.0 - 2.0 * s); // smoothstep
     const radius = DEBUG_CIRCLE_RADIUS * s;
-    // y-offset goes from ee_ref (no offset in group coords: +0.20)
-    // down to the circle centre (0 in group coords) as s goes 0→1.
-    const y = (-DEBUG_CIRCLE_Y_OFFSET) * (1.0 - s);
     const theta = 2.0 * Math.PI * Math.max(0, t - DEBUG_CIRCLE_RAMP_S) / DEBUG_CIRCLE_PERIOD_S;
-    marker.position.set(radius * Math.cos(theta), y, radius * Math.sin(theta));
+    marker.position.set(
+      eeLocal.x * (1 - s) + radius * Math.cos(theta),
+      eeLocal.y * (1 - s),
+      eeLocal.z * (1 - s) + radius * Math.sin(theta),
+    );
     marker.visible = true;
   }
 }
