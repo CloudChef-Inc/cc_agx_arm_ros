@@ -194,6 +194,7 @@ class QuestLeaderNode(Node):
         self._ee_ref: Optional[Pose6] = None
         self._last_ik_solution: Optional[np.ndarray] = None
         self._last_ik_fail_log = 0.0
+        self._last_ik_ok_log = 0.0
 
         self._preview_on = False
         self._follow_on = False
@@ -468,6 +469,19 @@ class QuestLeaderNode(Node):
             return
 
         self._last_ik_solution = q_sol
+
+        now = time.time()
+        if now - self._last_ik_ok_log > 1.0:
+            sol_ee = self._fk(q_sol)
+            self.get_logger().info(
+                f"[{self.side}] IK ok (err={err_norm:.4f}) "
+                f"dp_world={np.round(dp_world, 3).tolist()} "
+                f"dp_base={np.round(dp_base, 3).tolist()} "
+                f"target_pos={np.round(target_pos, 3).tolist()} "
+                f"sol_ee_pos={np.round(sol_ee.pos, 3).tolist()} "
+                f"q_sol={np.round(q_sol, 3).tolist()}"
+            )
+            self._last_ik_ok_log = now
 
         out = JointState()
         out.header.stamp = self.get_clock().now().to_msg()
