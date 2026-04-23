@@ -47,8 +47,15 @@ from std_msgs.msg import Bool, String
 #   Y (front+):  -0.20                                  — back
 #   Z (up+):     -0.15                                  — down
 DEBUG_CIRCLE_OFFSET = {
-    "left":  (+0.10, -0.20, -0.15),
-    "right": (-0.10, -0.20, -0.15),
+    "left":  (-0.05, -0.20, -0.15),
+    "right": (+0.05, -0.20, -0.15),
+}
+# Yaw of the circle's plane about world Z (radians). Matches
+# main.js::DEBUG_CIRCLE_YAW_RAD exactly — the published controller
+# trajectory must coincide with what the UI draws.
+DEBUG_CIRCLE_YAW_RAD = {
+    "left":  -math.pi / 6,
+    "right": +math.pi / 6,
 }
 DEBUG_CIRCLE_RADIUS  = 0.03    # metres
 DEBUG_CIRCLE_PERIOD  = 8.0     # seconds per revolution
@@ -178,10 +185,14 @@ class QuestTeleopNode(Node):
         s = max(0.0, min(1.0, t / DEBUG_CIRCLE_RAMP_S))
         s = s * s * (3.0 - 2.0 * s)  # smoothstep
         ox, oy, oz = DEBUG_CIRCLE_OFFSET[side]
+        yaw = DEBUG_CIRCLE_YAW_RAD[side]
+        ca, sa = math.cos(yaw), math.sin(yaw)
         radius = DEBUG_CIRCLE_RADIUS * s
         theta = 2.0 * math.pi * max(0.0, t - DEBUG_CIRCLE_RAMP_S) / DEBUG_CIRCLE_PERIOD
-        x = ox * s + radius * math.cos(theta)
-        y = oy * s
+        # Circle in world XZ rotated by `yaw` about world Z:
+        #   local X-axis = (cos α, sin α, 0), local Z-axis = (0,0,1).
+        x = ox * s + radius * ca * math.cos(theta)
+        y = oy * s + radius * sa * math.cos(theta)
         z = oz * s + radius * math.sin(theta)
         return x, y, z
 

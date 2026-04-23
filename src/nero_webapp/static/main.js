@@ -59,14 +59,27 @@ const prevQuestStatus = { left: "", right: "" };
 // Per-side offset from the calibration EE position (metres, world):
 //   both:    -0.20 Y  (20 cm toward the back)
 //   both:    -0.15 Z  (15 cm down)
-//   left arm:  +0.10 X  (10 cm toward the right / centreline)
-//   right arm: -0.10 X  (10 cm toward the left  / centreline)
+//   left arm:  -0.05 X  (5 cm further outward / away from centreline)
+//   right arm: +0.05 X  (5 cm further outward / away from centreline)
+// Each ring is also yawed ±30° about world Z so its plane faces
+// inward — left ring rotates with its +X side sweeping toward +Y,
+// right ring mirrors. Keeps the debug trajectories symmetric and
+// keeps the marker's motion component along world X, which exercises
+// the out-of-base_link rotation we care about for real teleop.
 const DEBUG_CIRCLE_RADIUS   = 0.03;
 const DEBUG_CIRCLE_PERIOD_S = 8.0;
 const DEBUG_CIRCLE_RAMP_S   = 2.0;
 const DEBUG_CIRCLE_OFFSET = {
-  left:  new THREE.Vector3(+0.10, -0.20, -0.15),
-  right: new THREE.Vector3(-0.10, -0.20, -0.15),
+  left:  new THREE.Vector3(-0.05, -0.20, -0.15),
+  right: new THREE.Vector3(+0.05, -0.20, -0.15),
+};
+// Yaw of the circle's plane about world Z, radians. Positive = CCW
+// looking from +Z down. Signs chosen so each ring faces inward:
+//   left  arm at -X: yaw -30° → plane normal gains +X component
+//   right arm at +X: yaw +30° → plane normal gains -X component
+const DEBUG_CIRCLE_YAW_RAD = {
+  left:  -Math.PI / 6,
+  right: +Math.PI / 6,
 };
 const debugCircles = { left: null, right: null }; // THREE.Group per side
 const debugMarkers = { left: null, right: null }; // the moving sphere
@@ -270,15 +283,19 @@ function buildDebugCircle(side) {
   group.position.copy(centreWorld); // group origin = circle centre (world)
   // No rotation: group is axis-aligned with the world frame.
 
-  // Torus lies in XY by default (normal = +Z). Rotate about +X by 90°
-  // so the ring lies in the world XZ plane (normal = world -Y).
+  // Torus lies in XY by default (normal = +Z). We want the ring in
+  // the XZ plane (Rx(π/2), normal → world -Y), then yawed by α about
+  // world Z. Using Euler order 'ZYX' the applied matrix is
+  //   Rz(α) · Ry(0) · Rx(π/2),
+  // which is exactly what we need.
+  const yaw = DEBUG_CIRCLE_YAW_RAD[side];
   const ring = new THREE.Mesh(
     new THREE.TorusGeometry(DEBUG_CIRCLE_RADIUS, 0.0015, 8, 96),
     new THREE.MeshBasicMaterial({
       color: 0x00e0ff, transparent: true, opacity: 0.9, depthWrite: false,
     }),
   );
-  ring.rotation.x = Math.PI / 2;
+  ring.rotation.set(Math.PI / 2, 0, yaw, "ZYX");
   ring.renderOrder = 600;
   group.add(ring);
 
@@ -341,9 +358,15 @@ function updateDebugMarkers() {
     s = s * s * (3.0 - 2.0 * s); // smoothstep
     const radius = DEBUG_CIRCLE_RADIUS * s;
     const theta = 2.0 * Math.PI * Math.max(0, t - DEBUG_CIRCLE_RAMP_S) / DEBUG_CIRCLE_PERIOD_S;
+    // Circle's local X-axis is Rz(yaw)·(1,0,0) = (cos α, sin α, 0);
+    // local Z-axis unchanged (rotating about Z fixes Z). So a point
+    // at angle θ in the yawed plane:
+    //   (r cos θ) · (cos α, sin α, 0) + (r sin θ) · (0, 0, 1).
+    const yaw = DEBUG_CIRCLE_YAW_RAD[side];
+    const ca = Math.cos(yaw), sa = Math.sin(yaw);
     marker.position.set(
-      eeLocal.x * (1 - s) + radius * Math.cos(theta),
-      eeLocal.y * (1 - s),
+      eeLocal.x * (1 - s) + radius * ca * Math.cos(theta),
+      eeLocal.y * (1 - s) + radius * sa * Math.cos(theta),
       eeLocal.z * (1 - s) + radius * Math.sin(theta),
     );
     marker.visible = true;
