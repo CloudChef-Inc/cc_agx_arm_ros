@@ -50,10 +50,17 @@ from scipy.spatial.transform import Rotation as R
 ARM_JOINT_NAMES = [f"joint{i}" for i in range(1, 8)]
 N_ARM = 7
 
-# Placeholder calibration poses. Tune on the bench.
-# TODO: Atish to tune.
-CALIBRATION_JOINT_POSE_LEFT: List[float] = [0.0, 0.5, 0.0, -1.2, 0.0, 1.0, 0.0]
-CALIBRATION_JOINT_POSE_RIGHT: List[float] = [0.0, 0.5, 0.0, -1.2, 0.0, 1.0, 0.0]
+# Calibration joint poses (radians, 7-DOF arm) + gripper width (metres).
+# Bench-tuned values: operator holds Quest controllers out in front at
+# shoulder height with palms facing inward, fingers wrapping the grip.
+_D2R = math.pi / 180.0
+CALIBRATION_JOINT_POSE_LEFT: List[float] = [
+    -90 * _D2R, 70 * _D2R, -45 * _D2R, 0.0, 135 * _D2R, 0.0, 0.0,
+]
+CALIBRATION_JOINT_POSE_RIGHT: List[float] = [
+    90 * _D2R, 70 * _D2R, 45 * _D2R, 0.0, -135 * _D2R, 0.0, 0.0,
+]
+CALIBRATION_GRIPPER_WIDTH: float = 0.1  # metres, fully open
 
 COUNTDOWN_S = 5
 IK_RATE_HZ = 30.0
@@ -279,8 +286,11 @@ class QuestLeaderNode(Node):
 
         ghost = JointState()
         ghost.header.stamp = self.get_clock().now().to_msg()
-        ghost.name = list(ARM_JOINT_NAMES)
-        ghost.position = target_q.tolist()
+        # Include the gripper width so the webapp can drive it to "fully
+        # open" for the calibration pose too. FK/IK only consume the
+        # arm joints — the extra name is a pass-through for the UI.
+        ghost.name = list(ARM_JOINT_NAMES) + ["gripper"]
+        ghost.position = target_q.tolist() + [CALIBRATION_GRIPPER_WIDTH]
         self._ghost_pub.publish(ghost)
 
         try:
