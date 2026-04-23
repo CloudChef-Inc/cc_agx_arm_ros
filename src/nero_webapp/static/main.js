@@ -58,15 +58,15 @@ const prevQuestStatus = { left: "", right: "" };
 // operator reasons about, not in each arm's ±110°-rolled base_link.
 // Per-side offset from the calibration EE position (metres, world):
 //   both:    -0.20 Y  (20 cm toward the back)
-//   both:    -0.40 Z  (40 cm down)
+//   both:    -0.15 Z  (15 cm down)
 //   left arm:  +0.10 X  (10 cm toward the right / centreline)
 //   right arm: -0.10 X  (10 cm toward the left  / centreline)
 const DEBUG_CIRCLE_RADIUS   = 0.03;
 const DEBUG_CIRCLE_PERIOD_S = 8.0;
 const DEBUG_CIRCLE_RAMP_S   = 2.0;
 const DEBUG_CIRCLE_OFFSET = {
-  left:  new THREE.Vector3(+0.10, -0.20, -0.40),
-  right: new THREE.Vector3(-0.10, -0.20, -0.40),
+  left:  new THREE.Vector3(+0.10, -0.20, -0.15),
+  right: new THREE.Vector3(-0.10, -0.20, -0.15),
 };
 const debugCircles = { left: null, right: null }; // THREE.Group per side
 const debugMarkers = { left: null, right: null }; // the moving sphere
