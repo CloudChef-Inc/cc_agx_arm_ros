@@ -58,7 +58,7 @@ DEBUG_CIRCLE_YAW_RAD = {
     "right": +math.pi / 6,
 }
 DEBUG_CIRCLE_RADIUS  = 0.03    # metres
-DEBUG_CIRCLE_PERIOD  = 8.0     # seconds per revolution
+DEBUG_CIRCLE_PERIOD  = 2.0     # seconds per revolution (default; overridable via param)
 DEBUG_CIRCLE_RAMP_S  = 2.0     # smooth move from idle → on-circle
 
 
@@ -70,11 +70,15 @@ class QuestTeleopNode(Node):
         self.declare_parameter("port", 4443)
         self.declare_parameter("debug_sinusoidal", False)
         self.declare_parameter("frame_id", "quest_world")
+        self.declare_parameter("debug_circle_period_s", DEBUG_CIRCLE_PERIOD)
 
         self.host = self.get_parameter("host").value
         self.port = int(self.get_parameter("port").value)
         self.debug = bool(self.get_parameter("debug_sinusoidal").value)
         self.frame_id = self.get_parameter("frame_id").value
+        self._circle_period = float(
+            self.get_parameter("debug_circle_period_s").value
+        )
 
         self._pubs = {
             "left": self.create_publisher(PoseStamped, "/quest/left_controller", 10),
@@ -188,7 +192,7 @@ class QuestTeleopNode(Node):
         yaw = DEBUG_CIRCLE_YAW_RAD[side]
         ca, sa = math.cos(yaw), math.sin(yaw)
         radius = DEBUG_CIRCLE_RADIUS * s
-        theta = 2.0 * math.pi * max(0.0, t - DEBUG_CIRCLE_RAMP_S) / DEBUG_CIRCLE_PERIOD
+        theta = 2.0 * math.pi * max(0.0, t - DEBUG_CIRCLE_RAMP_S) / self._circle_period
         # Circle in world XZ rotated by `yaw` about world Z:
         #   local X-axis = (cos α, sin α, 0), local Z-axis = (0,0,1).
         x = ox * s + radius * ca * math.cos(theta)

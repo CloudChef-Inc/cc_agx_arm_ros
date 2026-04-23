@@ -117,6 +117,9 @@ class WebappNode(Node):
         self.declare_parameter("torso_depth",       0.10)
         self.declare_parameter("torso_height",      0.60)
         self.declare_parameter("shoulder_tilt_deg", 20.0)
+        # Seconds per revolution of the debug controller circle (viz).
+        # Matches the quest_teleop_node param of the same name.
+        self.declare_parameter("debug_circle_period_s", 2.0)
 
         self.joint_names: List[str] = (
             self.get_parameter("joint_names").get_parameter_value().string_array_value
@@ -516,6 +519,7 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
             "torso_depth":       node.get_parameter("torso_depth").get_parameter_value().double_value,
             "torso_height":      node.get_parameter("torso_height").get_parameter_value().double_value,
             "shoulder_tilt_deg": node.get_parameter("shoulder_tilt_deg").get_parameter_value().double_value,
+            "debug_circle_period_s": node.get_parameter("debug_circle_period_s").get_parameter_value().double_value,
         }
 
     # ---- gravity comp toggle (calls the gravity_comp node's param) ----

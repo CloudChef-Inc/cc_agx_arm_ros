@@ -164,6 +164,12 @@ def generate_launch_description() -> LaunchDescription:
         description="If true, quest_teleop_node fabricates sinusoidal poses "
                     "instead of running the WebXR server (no headset needed).",
     )
+    debug_circle_period_arg = DeclareLaunchArgument(
+        "debug_circle_period_s", default_value="2.0",
+        description="Seconds per revolution for the debug controller circle. "
+                    "Consumed by quest_teleop_node (trajectory) and webapp_node "
+                    "(viz via /torso_config).",
+    )
 
     # Composed two-arm URDF via xacro — pass torso dims as args.
     xacro_file = PathJoinSubstitution([
@@ -237,6 +243,9 @@ def generate_launch_description() -> LaunchDescription:
             "torso_depth":       LaunchConfiguration("torso_depth"),
             "torso_height":      LaunchConfiguration("torso_height"),
             "shoulder_tilt_deg": LaunchConfiguration("shoulder_tilt_deg"),
+            "debug_circle_period_s": ParameterValue(
+                LaunchConfiguration("debug_circle_period_s"), value_type=float
+            ),
         }],
     )
 
@@ -277,6 +286,9 @@ def generate_launch_description() -> LaunchDescription:
             "host": LaunchConfiguration("quest_host"),
             "port": ParameterValue(LaunchConfiguration("quest_port"), value_type=int),
             "debug_sinusoidal": ParameterValue(LaunchConfiguration("quest_debug"), value_type=bool),
+            "debug_circle_period_s": ParameterValue(
+                LaunchConfiguration("debug_circle_period_s"), value_type=float
+            ),
         }],
     )
     # FK/IK is done in-process via Pinocchio on the single-arm URDF
@@ -341,6 +353,7 @@ def generate_launch_description() -> LaunchDescription:
         quest_host_arg,
         quest_port_arg,
         quest_debug_arg,
+        debug_circle_period_arg,
         rsp_node,
         left_arm,
         right_arm,

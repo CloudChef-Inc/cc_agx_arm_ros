@@ -67,7 +67,8 @@ const prevQuestStatus = { left: "", right: "" };
 // keeps the marker's motion component along world X, which exercises
 // the out-of-base_link rotation we care about for real teleop.
 const DEBUG_CIRCLE_RADIUS   = 0.03;
-const DEBUG_CIRCLE_PERIOD_S = 8.0;
+// Default period (s/rev); /torso_config overrides it at boot.
+let   DEBUG_CIRCLE_PERIOD_S = 2.0;
 const DEBUG_CIRCLE_RAMP_S   = 2.0;
 const DEBUG_CIRCLE_OFFSET = {
   left:  new THREE.Vector3(-0.05, -0.20, -0.15),
@@ -985,6 +986,9 @@ async function boot() {
     SHOULDER_X = TORSO_X / 2.0;
     if (typeof tc.shoulder_tilt_deg === "number") {
       SHOULDER_TILT = tc.shoulder_tilt_deg * Math.PI / 180.0;
+    }
+    if (typeof tc.debug_circle_period_s === "number") {
+      DEBUG_CIRCLE_PERIOD_S = tc.debug_circle_period_s;
     }
     // Update the torso box + shoulder mounts that were created with
     // the initial (possibly stale) defaults.
