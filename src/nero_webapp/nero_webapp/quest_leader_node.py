@@ -175,24 +175,14 @@ class QuestLeaderNode(Node):
             f"({rpy[0]:.3f}, {rpy[1]:.3f}, {rpy[2]:.3f})"
         )
 
-        # Precompute the EE orientation that points the gripper's
-        # approach axis (local +Z) along the debug circle's normal,
-        # expressed in base_link. Gripper "up" is aligned with world
-        # +Z, so the frame is unambiguous.
-        #
-        # Normal to the ring (world), with the ring in XZ yawed by α
-        # about Z:  n = Rz(α) · (0, 1, 0) = (-sin α,  cos α, 0).
-        # Frame built with: local_z = n, local_y = world +Z, local_x
-        # = local_y × local_z.
+        # Debug mode: the IK target orientation is the calibration EE
+        # orientation yawed by α about world Z — nothing else. Keeps
+        # the gripper's roll/pitch exactly as calibrated and just
+        # turns it to face the (yawed) ring. Cache the base-frame
+        # conjugation once: R_yaw_base = R_mount⁻¹ · Rz(α) · R_mount.
         yaw = DEBUG_CIRCLE_YAW_RAD[self.side]
-        ca, sa = math.cos(yaw), math.sin(yaw)
-        local_z_w = np.array([-sa, ca, 0.0])
-        local_y_w = np.array([0.0, 0.0, 1.0])
-        local_x_w = np.cross(local_y_w, local_z_w)
-        R_normal_world = np.column_stack([local_x_w, local_y_w, local_z_w])
-        self._R_normal_base: R = R.from_matrix(
-            self._R_mount_inv.as_matrix() @ R_normal_world
-        )
+        Rz_world = R.from_euler("z", yaw)
+        self._R_yaw_base: R = self._R_mount_inv * Rz_world * self._R_mount
 
         if not urdf_path:
             urdf_path = str(
@@ -508,15 +498,12 @@ class QuestLeaderNode(Node):
         target_rot = dr_base * self._ee_ref.rot
 
         if self._debug_orient_to_circle:
-            # Replace the delta-based orientation with a fixed
-            # normal-facing pose (gripper approach along world ring
-            # normal, gripper up along world +Z). Useful because the
-            # debug teleop stream has no real orientation signal, and
-            # the calibration FK orientation is unrelated to the
-            # ring's normal. This keeps the debug IK target
-            # reasonable — otherwise orientation can fight the
-            # position track, especially near the ring's edge.
-            target_rot = self._R_normal_base
+            # Yaw the calibration EE orientation by α about world Z —
+            # no other axis changes. Preserves the calibrated roll
+            # and pitch, which keeps the gripper oriented the same
+            # way the operator expects; only the direction-of-reach
+            # rotates to face the yawed ring.
+            target_rot = self._R_yaw_base * self._ee_ref.rot
 
         seed = (self._last_ik_solution
                 if self._last_ik_solution is not None
