@@ -134,18 +134,37 @@ class QuestLeaderNode(Node):
         if self.side not in ("left", "right"):
             raise ValueError(f"side must be left|right, got {self.side}")
 
-        # Mount rotation (robot-world → base_link). Matches the xacro:
-        #   right: rpy = "(pi/2 + tilt) 0 0"   — roll +110° about +X
-        #   left : rpy = "-(pi/2 + tilt) 0 0"  — roll −110° about +X
-        # URDF rpy = fixed-axis (extrinsic) xyz → scipy 'xyz'.
+        # Mount rotation (three.js-world → base_link). MUST match the
+        # rotations main.js applies to each mount group, because the
+        # ghost URDF is rendered under that mount. If we used the
+        # xacro's rpy here instead, the IK would target coordinates
+        # in the URDF's coordinate system, which is NOT the same frame
+        # main.js draws in — so the ghost EE would wander off the
+        # drawn ring.
+        #
+        # From main.js buildArms():
+        #   right: rightMount.rotation.set(π, π/2, 0) then
+        #          rightMount.rotateX(+tilt)   (intrinsic)
+        #        →  Rx(π) · Ry(π/2) · Rx(+tilt)
+        #   left : leftMount.rotation.y = -π/2 then
+        #          leftMount.rotateX(-tilt)   (intrinsic)
+        #        →  Ry(-π/2) · Rx(-tilt)
         shoulder_tilt = math.radians(shoulder_tilt_deg)
-        roll = (math.pi / 2.0) + shoulder_tilt
-        if self.side == "left":
-            roll = -roll
-        self._R_mount: R = R.from_euler("xyz", [roll, 0.0, 0.0])
+        if self.side == "right":
+            self._R_mount: R = (
+                R.from_euler("x", math.pi)
+                * R.from_euler("y", math.pi / 2.0)
+                * R.from_euler("x", shoulder_tilt)
+            )
+        else:
+            self._R_mount: R = (
+                R.from_euler("y", -math.pi / 2.0)
+                * R.from_euler("x", -shoulder_tilt)
+            )
         self._R_mount_inv: R = self._R_mount.inv()
         self.get_logger().info(
-            f"[{self.side}] mount rpy = ({math.degrees(roll):.2f}, 0, 0) deg"
+            f"[{self.side}] mount matrix (three.js-world → base_link):\n"
+            f"{np.array2string(self._R_mount.as_matrix(), precision=3)}"
         )
 
         if not urdf_path:
