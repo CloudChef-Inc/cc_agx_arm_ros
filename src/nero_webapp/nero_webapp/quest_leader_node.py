@@ -244,18 +244,20 @@ class QuestLeaderNode(Node):
         target_pos: np.ndarray,
         target_rot: R,
         q_seed: np.ndarray,
-    ) -> tuple[np.ndarray, bool]:
-        """Damped least-squares IK. Returns (arm_q, success)."""
+    ) -> tuple[np.ndarray, bool, float]:
+        """Damped least-squares IK. Returns (arm_q, success, final_err_norm)."""
         q_arm = np.array(q_seed, dtype=float).copy()
         target_se3 = pin.SE3(target_rot.as_matrix(), target_pos)
+        err_norm = float("inf")
         for _ in range(IK_MAX_ITERS):
             q_full = self._q_full(q_arm)
             pin.forwardKinematics(self.model, self.data, q_full)
             pin.updateFramePlacement(self.model, self.data, self._ee_fid)
             oMf = self.data.oMf[self._ee_fid]
             err = pin.log(oMf.actInv(target_se3)).vector  # 6-vector in EE frame
-            if np.linalg.norm(err) < IK_EPS:
-                return q_arm, True
+            err_norm = float(np.linalg.norm(err))
+            if err_norm < IK_EPS:
+                return q_arm, True, err_norm
             J_full = pin.computeFrameJacobian(
                 self.model, self.data, q_full, self._ee_fid, pin.LOCAL
             )
@@ -264,7 +266,7 @@ class QuestLeaderNode(Node):
             JJt = J @ J.T + (IK_DAMPING ** 2) * np.eye(6)
             dq_arm = J.T @ np.linalg.solve(JJt, err)
             q_arm = q_arm + dq_arm
-        return q_arm, False
+        return q_arm, False, err_norm
 
     # ---------- services ----------
     def _calibrate_srv(self, request: Trigger.Request, response: Trigger.Response):
@@ -406,11 +408,19 @@ class QuestLeaderNode(Node):
         seed = (self._last_ik_solution
                 if self._last_ik_solution is not None
                 else np.zeros(N_ARM))
-        q_sol, ok = self._ik(target_pos, target_rot, seed)
+        q_sol, ok, err_norm = self._ik(target_pos, target_rot, seed)
         if not ok:
             now = time.time()
             if now - self._last_ik_fail_log > 1.0:
-                self.get_logger().warn(f"[{self.side}] IK did not converge")
+                seed_ee = self._fk(seed)
+                self.get_logger().warn(
+                    f"[{self.side}] IK did not converge (err={err_norm:.4f}) "
+                    f"target_pos={target_pos.tolist()} "
+                    f"ee_ref_pos={self._ee_ref.pos.tolist()} "
+                    f"dp={dp.tolist()} "
+                    f"seed_ee_pos={seed_ee.pos.tolist()} "
+                    f"seed_q={seed.tolist()}"
+                )
                 self._last_ik_fail_log = now
             return
 

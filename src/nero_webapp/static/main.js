@@ -52,6 +52,19 @@ const ghostRobots = { left: null, right: null };
 // the instant CALIBRATING begins, not on every subsequent frame).
 const prevQuestStatus = { left: "", right: "" };
 
+// Debug-trajectory visualisation. Mirrors the constants in
+// quest_teleop_node._debug_pose so what the UI draws matches what the
+// teleop node publishes. The circle is drawn in each arm's base_link
+// frame because that is also how quest_leader_node consumes `dp`
+// (added directly to ee_ref, which comes from FK in base_link).
+const DEBUG_CIRCLE_Y_OFFSET = -0.20;
+const DEBUG_CIRCLE_RADIUS   = 0.03;
+const DEBUG_CIRCLE_PERIOD_S = 8.0;
+const DEBUG_CIRCLE_RAMP_S   = 2.0;
+const debugCircles = { left: null, right: null }; // THREE.Group per side
+const debugMarkers = { left: null, right: null }; // the moving sphere
+const debugMotionStart = { left: null, right: null }; // seconds since epoch
+
 // ------------ three.js scene --------------------------------------------
 // Switch the world to Z-up before creating any object whose orientation
 // depends on the up vector (camera, OrbitControls).
@@ -221,6 +234,118 @@ function makeGhost(robot) {
   return robot;
 }
 
+function buildDebugCircle(side) {
+  // Called once calibration has driven the ghost to the calibration
+  // pose. Reads the ghost's gripper_flange world position, converts to
+  // base_link-local, and draws a ring at (flange + (0, -0.20, 0))
+  // lying in the XZ plane — the exact same geometry the debug
+  // controller will trace through `dp`.
+  const robot = armRobots[side];
+  const ghost = ghostRobots[side];
+  if (!robot || !ghost) return;
+  const flange = ghost.links && ghost.links["gripper_flange"];
+  if (!flange) return;
+
+  ghost.updateMatrixWorld(true);
+  robot.updateMatrixWorld(true);
+  const worldPos = new THREE.Vector3();
+  flange.getWorldPosition(worldPos);
+  const eeLocal = robot.worldToLocal(worldPos.clone()); // in base_link
+
+  // Tear down any previous circle on this side.
+  if (debugCircles[side]) {
+    robot.remove(debugCircles[side]);
+    debugCircles[side] = null;
+    debugMarkers[side] = null;
+  }
+
+  const group = new THREE.Group();
+  group.position.copy(eeLocal);
+  group.position.y += DEBUG_CIRCLE_Y_OFFSET; // circle centre
+
+  // Torus lies in XY by default (normal = +Z). Rotate so normal = +Y,
+  // matching the XZ-plane circle in quest_teleop_node._debug_pose.
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(DEBUG_CIRCLE_RADIUS, 0.0015, 8, 96),
+    new THREE.MeshBasicMaterial({
+      color: 0x00e0ff, transparent: true, opacity: 0.9, depthWrite: false,
+    }),
+  );
+  ring.rotation.x = Math.PI / 2;
+  ring.renderOrder = 600;
+  group.add(ring);
+
+  // Small dot at the centre of the circle.
+  const centre = new THREE.Mesh(
+    new THREE.SphereGeometry(0.005, 10, 10),
+    new THREE.MeshBasicMaterial({ color: 0x00e0ff, depthWrite: false }),
+  );
+  centre.renderOrder = 600;
+  group.add(centre);
+
+  // Line from calibration EE to circle centre, visualising the 20 cm
+  // -Y offset. Line endpoints in the group's local frame.
+  const lineGeom = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, -DEBUG_CIRCLE_Y_OFFSET, 0), // ee_ref
+    new THREE.Vector3(0, 0, 0),                      // circle centre
+  ]);
+  const line = new THREE.Line(
+    lineGeom,
+    new THREE.LineDashedMaterial({
+      color: 0x00e0ff, dashSize: 0.01, gapSize: 0.006,
+      transparent: true, opacity: 0.6, depthWrite: false,
+    }),
+  );
+  line.computeLineDistances();
+  line.renderOrder = 600;
+  group.add(line);
+
+  // The moving marker — position updated in the animate loop while the
+  // side's debug trajectory is active.
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.012, 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xff3b3b, depthWrite: false }),
+  );
+  marker.renderOrder = 601;
+  marker.position.set(DEBUG_CIRCLE_RADIUS, 0, 0); // phase-0 start
+  group.add(marker);
+  debugMarkers[side] = marker;
+
+  robot.add(group);
+  debugCircles[side] = group;
+}
+
+function updateDebugMarkers() {
+  // Mirrors quest_teleop_node._debug_pose: smoothstep ramp 0→1 over
+  // RAMP_S, then steady-state circle of RADIUS in the XZ plane around
+  // the centre (ee_ref + (0,-0.20,0)). Phase starts at the moment the
+  // side's Preview toggle went True (tracked via prevQuestStatus).
+  const now = performance.now() / 1000.0;
+  for (const side of ["left", "right"]) {
+    const marker = debugMarkers[side];
+    if (!marker) continue;
+    const start = debugMotionStart[side];
+    if (start === null) {
+      // Marker rests at the calibration EE (in group-local coords:
+      // +(-DEBUG_CIRCLE_Y_OFFSET) along +Y, since the group origin is
+      // the circle centre offset in -Y from the EE).
+      marker.position.set(0, -DEBUG_CIRCLE_Y_OFFSET, 0);
+      marker.visible = true;
+      continue;
+    }
+    const t = now - start;
+    let s = Math.max(0, Math.min(1, t / DEBUG_CIRCLE_RAMP_S));
+    s = s * s * (3.0 - 2.0 * s); // smoothstep
+    const radius = DEBUG_CIRCLE_RADIUS * s;
+    // y-offset goes from ee_ref (no offset in group coords: +0.20)
+    // down to the circle centre (0 in group coords) as s goes 0→1.
+    const y = (-DEBUG_CIRCLE_Y_OFFSET) * (1.0 - s);
+    const theta = 2.0 * Math.PI * Math.max(0, t - DEBUG_CIRCLE_RAMP_S) / DEBUG_CIRCLE_PERIOD_S;
+    marker.position.set(radius * Math.cos(theta), y, radius * Math.sin(theta));
+    marker.visible = true;
+  }
+}
+
 async function buildArms() {
   const [leftRobot, rightRobot, leftGhost, rightGhost] = await Promise.all([
     loadArm(), loadArm(), loadArm(), loadArm(),
@@ -331,6 +456,7 @@ function animate() {
   requestAnimationFrame(animate);
   resizeViewport();
   controls.update();
+  updateDebugMarkers();
   renderer.render(scene, camera);
 }
 
@@ -575,6 +701,20 @@ function connect() {
             if (followBtn && followBtn.classList.contains("active")) {
               sendCommand(side);
             }
+            // Ghost joints were just updated — rebuild the debug
+            // circle at the (new) calibration EE position.
+            buildDebugCircle(side);
+            debugMotionStart[side] = null; // reset phase
+          }
+          // Track preview on/off transitions so the marker animates
+          // from phase 0 each time preview comes back on — matches
+          // the per-side motion_start in quest_teleop_node.
+          const prevPreviewOn = prev.includes("preview=True");
+          const previewOn = state.includes("preview=True");
+          if (previewOn && !prevPreviewOn) {
+            debugMotionStart[side] = performance.now() / 1000.0;
+          } else if (!previewOn && prevPreviewOn) {
+            debugMotionStart[side] = null;
           }
           prevQuestStatus[side] = state;
           if (statusEl) {
