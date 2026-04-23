@@ -55,10 +55,10 @@ N_ARM = 7
 # shoulder height with palms facing inward, fingers wrapping the grip.
 _D2R = math.pi / 180.0
 CALIBRATION_JOINT_POSE_LEFT: List[float] = [
-    -90 * _D2R, 70 * _D2R, -45 * _D2R, 0.3, 135 * _D2R, 0.0, 0.0,
+    -90 * _D2R, 70 * _D2R, -45 * _D2R, 0.0, 135 * _D2R, 0.0, 0.0,
 ]
 CALIBRATION_JOINT_POSE_RIGHT: List[float] = [
-    90 * _D2R, 70 * _D2R, 45 * _D2R, 0.3, -135 * _D2R, 0.0, 0.0,
+    90 * _D2R, 70 * _D2R, 45 * _D2R, 0.0, -135 * _D2R, 0.0, 0.0,
 ]
 CALIBRATION_GRIPPER_WIDTH: float = 0.1  # metres, fully open
 
@@ -75,6 +75,10 @@ STREAM_STALL_S = 0.5
 IK_MAX_ITERS = 30
 IK_EPS = 1e-3
 IK_DAMPING = 1e-4
+# Cap ‖dq‖ per DLS iteration (rad). Near a singularity, even damped
+# DLS can produce steps big enough to skip into a different IK
+# branch; clamping the step keeps the solver local to the seed.
+IK_MAX_STEP = 0.3
 
 STATE_IDLE = "IDLE"
 STATE_CALIBRATING = "CALIBRATING"
@@ -174,6 +178,16 @@ class QuestLeaderNode(Node):
                 raise RuntimeError(f"joint {name} not in model")
             self._q_indices.append(int(self.model.idx_qs[jid]))
             self._v_indices.append(int(self.model.idx_vs[jid]))
+
+        # Per-arm-joint position limits, pulled from the URDF once.
+        # Used inside the DLS loop to clamp solutions — without this,
+        # near-singular iterations can wind q up by multiple 2π and
+        # FK is mod-2π so the solver happily reports "converged" on a
+        # kinematic branch the hardware can't actually reach.
+        qlo = self.model.lowerPositionLimit
+        qhi = self.model.upperPositionLimit
+        self._q_lower = np.array([float(qlo[i]) for i in self._q_indices])
+        self._q_upper = np.array([float(qhi[i]) for i in self._q_indices])
 
         if not self.model.existFrame(self.ee_link):
             raise RuntimeError(f"ee_link '{self.ee_link}' not found in URDF")
@@ -298,7 +312,15 @@ class QuestLeaderNode(Node):
             # Damped least squares: dq = J^T (J J^T + λ²I)^-1 err
             JJt = J @ J.T + (IK_DAMPING ** 2) * np.eye(6)
             dq_arm = J.T @ np.linalg.solve(JJt, err)
+            # Cap step norm so a near-singular iteration can't leap
+            # into a wound-up IK branch.
+            step_n = float(np.linalg.norm(dq_arm))
+            if step_n > IK_MAX_STEP:
+                dq_arm = dq_arm * (IK_MAX_STEP / step_n)
             q_arm = q_arm + dq_arm
+            # Project onto joint limits — stops the solver reporting
+            # solutions the hardware can't reach.
+            q_arm = np.clip(q_arm, self._q_lower, self._q_upper)
         return q_arm, False, err_norm
 
     # ---------- services ----------
