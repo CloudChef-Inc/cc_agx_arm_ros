@@ -36,15 +36,20 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Bool, String
 
 
-# Debug-mode circle geometry. The EE should trace a small circle whose
-# centre sits 20 cm in -Y (robot world frame: Y = front, so -Y = toward
-# the operator) from the EE position at calibration. Since the quest
-# leader's delta math is translation-additive in world frame, the
-# controller's debug pose just has to describe that same trajectory
-# relative to its value at calibration time. We publish (0,0,0) while
-# the side's preview toggle is off (so ctrl_ref snapshots cleanly at
-# the origin), and start the trajectory the moment preview flips on.
-DEBUG_CIRCLE_Y_OFFSET = -0.20  # metres toward operator
+# Debug-mode circle geometry. Each side's controller traces a circle
+# (in robot-world frame, since quest_leader_node now rotates the dp
+# into each arm's base_link) around a centre offset from its
+# calibration EE position. The per-side offset pulls both circles
+# inward and downward so the arms' ghosts orbit within reach; must
+# match main.js::DEBUG_CIRCLE_OFFSET so the UI viz and the IK target
+# are the same trajectory.
+#   X (right+):  +0.10 (left arm) / -0.10 (right arm)  — inward
+#   Y (front+):  -0.20                                  — back
+#   Z (up+):     -0.15                                  — down
+DEBUG_CIRCLE_OFFSET = {
+    "left":  (+0.10, -0.20, -0.15),
+    "right": (-0.10, -0.20, -0.15),
+}
 DEBUG_CIRCLE_RADIUS  = 0.03    # metres
 DEBUG_CIRCLE_PERIOD  = 8.0     # seconds per revolution
 DEBUG_CIRCLE_RAMP_S  = 2.0     # smooth move from idle → on-circle
@@ -156,26 +161,28 @@ class QuestTeleopNode(Node):
         self._preview_on[side] = preview_on
 
     def _debug_pose(self, side: str) -> tuple[float, float, float]:
-        """Controller position (x, y, z) relative to the idle origin.
+        """Controller position (x, y, z) in robot-world, relative to
+        where the controller was at calibration (which the leader
+        snapshots as ctrl_ref — so this value IS `dp` to the leader).
 
-        Stays at (0, 0, 0) until Preview turns on for this side, then
-        smoothly ramps toward (0, -0.20, 0) while starting a circle of
-        radius DEBUG_CIRCLE_RADIUS in the XZ plane. Phase is per-side so
-        the two arms circle independently.
+        Holds (0, 0, 0) while Preview is off on this side (so ctrl_ref
+        snapshots at the origin). When Preview turns on: smoothstep
+        ramps the offset (xOff, yOff, zOff) in from 0 → full over
+        RAMP_S seconds while growing a circle of radius R in the XZ
+        plane around that offset point. Matches main.js viz exactly.
         """
         start = self._motion_start[side]
         if start is None:
             return 0.0, 0.0, 0.0
         t = time.time() - start
-        # Smoothstep 0→1 over the first RAMP_S seconds so the y-offset
-        # and radius ease in without a jerk.
         s = max(0.0, min(1.0, t / DEBUG_CIRCLE_RAMP_S))
-        s = s * s * (3.0 - 2.0 * s)  # classic smoothstep
-        y = DEBUG_CIRCLE_Y_OFFSET * s
+        s = s * s * (3.0 - 2.0 * s)  # smoothstep
+        ox, oy, oz = DEBUG_CIRCLE_OFFSET[side]
         radius = DEBUG_CIRCLE_RADIUS * s
         theta = 2.0 * math.pi * max(0.0, t - DEBUG_CIRCLE_RAMP_S) / DEBUG_CIRCLE_PERIOD
-        x = radius * math.cos(theta)
-        z = radius * math.sin(theta)
+        x = ox * s + radius * math.cos(theta)
+        y = oy * s
+        z = oz * s + radius * math.sin(theta)
         return x, y, z
 
     def _debug_tick(self) -> None:

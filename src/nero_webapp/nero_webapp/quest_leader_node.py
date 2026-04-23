@@ -64,8 +64,11 @@ CALIBRATION_GRIPPER_WIDTH: float = 0.1  # metres, fully open
 
 COUNTDOWN_S = 5
 IK_RATE_HZ = 30.0
-MAX_DP = 0.05
-MAX_DR_DEG = 15.0
+# Cumulative clamp on (ctrl - ctrl_ref). 0.05 m was far too tight —
+# it kept the target pinned within 5 cm of the calibration EE even
+# for intentional 20–30 cm moves. Workspace-reasonable bound.
+MAX_DP = 0.50
+MAX_DR_DEG = 90.0
 STREAM_STALL_S = 0.5
 
 # DLS IK params.
