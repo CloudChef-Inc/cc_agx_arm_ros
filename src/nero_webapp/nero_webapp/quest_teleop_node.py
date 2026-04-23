@@ -33,7 +33,21 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
+
+
+# Debug-mode circle geometry. The EE should trace a small circle whose
+# centre sits 20 cm in -Y (robot world frame: Y = front, so -Y = toward
+# the operator) from the EE position at calibration. Since the quest
+# leader's delta math is translation-additive in world frame, the
+# controller's debug pose just has to describe that same trajectory
+# relative to its value at calibration time. We publish (0,0,0) while
+# the side's preview toggle is off (so ctrl_ref snapshots cleanly at
+# the origin), and start the trajectory the moment preview flips on.
+DEBUG_CIRCLE_Y_OFFSET = -0.20  # metres toward operator
+DEBUG_CIRCLE_RADIUS  = 0.03    # metres
+DEBUG_CIRCLE_PERIOD  = 8.0     # seconds per revolution
+DEBUG_CIRCLE_RAMP_S  = 2.0     # smooth move from idle → on-circle
 
 
 class QuestTeleopNode(Node):
@@ -60,8 +74,22 @@ class QuestTeleopNode(Node):
         }
 
         if self.debug:
-            self.get_logger().warn("DEBUG sinusoidal mode: fabricating controller poses")
-            self._t0 = time.time()
+            self.get_logger().warn(
+                "DEBUG mode: fabricating controller poses "
+                "(circle begins when Preview is enabled on that side)"
+            )
+            # Per-side "motion start" timestamp, set on the preview=False→True
+            # transition and cleared on the reverse. None means "hold at origin."
+            self._motion_start: dict[str, float | None] = {"left": None, "right": None}
+            self._preview_on: dict[str, bool] = {"left": False, "right": False}
+            self.create_subscription(
+                String, "/left/quest_leader/status",
+                lambda msg: self._on_status("left", msg), 10,
+            )
+            self.create_subscription(
+                String, "/right/quest_leader/status",
+                lambda msg: self._on_status("right", msg), 10,
+            )
             self.create_timer(1.0 / 50.0, self._debug_tick)
             return
 
@@ -119,16 +147,47 @@ class QuestTeleopNode(Node):
             trig_pressed = bool(buttons[0].get("pressed")) if buttons else False
             self._trig_pubs[hand].publish(Bool(data=trig_pressed))
 
+    def _on_status(self, side: str, msg: String) -> None:
+        preview_on = "preview=True" in msg.data
+        if preview_on and not self._preview_on[side]:
+            self._motion_start[side] = time.time()
+        elif not preview_on and self._preview_on[side]:
+            self._motion_start[side] = None
+        self._preview_on[side] = preview_on
+
+    def _debug_pose(self, side: str) -> tuple[float, float, float]:
+        """Controller position (x, y, z) relative to the idle origin.
+
+        Stays at (0, 0, 0) until Preview turns on for this side, then
+        smoothly ramps toward (0, -0.20, 0) while starting a circle of
+        radius DEBUG_CIRCLE_RADIUS in the XZ plane. Phase is per-side so
+        the two arms circle independently.
+        """
+        start = self._motion_start[side]
+        if start is None:
+            return 0.0, 0.0, 0.0
+        t = time.time() - start
+        # Smoothstep 0→1 over the first RAMP_S seconds so the y-offset
+        # and radius ease in without a jerk.
+        s = max(0.0, min(1.0, t / DEBUG_CIRCLE_RAMP_S))
+        s = s * s * (3.0 - 2.0 * s)  # classic smoothstep
+        y = DEBUG_CIRCLE_Y_OFFSET * s
+        radius = DEBUG_CIRCLE_RADIUS * s
+        theta = 2.0 * math.pi * max(0.0, t - DEBUG_CIRCLE_RAMP_S) / DEBUG_CIRCLE_PERIOD
+        x = radius * math.cos(theta)
+        z = radius * math.sin(theta)
+        return x, y, z
+
     def _debug_tick(self) -> None:
-        t = time.time() - self._t0
         now = self.get_clock().now().to_msg()
-        for hand, sign in (("left", +1.0), ("right", -1.0)):
+        for hand in ("left", "right"):
+            x, y, z = self._debug_pose(hand)
             msg = PoseStamped()
             msg.header.stamp = now
             msg.header.frame_id = self.frame_id
-            msg.pose.position.x = 0.0
-            msg.pose.position.y = sign * 0.3 + 0.05 * math.sin(2 * math.pi * 0.2 * t)
-            msg.pose.position.z = 1.2 + 0.05 * math.sin(2 * math.pi * 0.3 * t)
+            msg.pose.position.x = x
+            msg.pose.position.y = y
+            msg.pose.position.z = z
             msg.pose.orientation.w = 1.0
             self._pubs[hand].publish(msg)
             self._trig_pubs[hand].publish(Bool(data=False))
