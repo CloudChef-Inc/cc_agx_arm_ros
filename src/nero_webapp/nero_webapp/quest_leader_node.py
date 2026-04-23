@@ -55,10 +55,10 @@ N_ARM = 7
 # shoulder height with palms facing inward, fingers wrapping the grip.
 _D2R = math.pi / 180.0
 CALIBRATION_JOINT_POSE_LEFT: List[float] = [
-    -90 * _D2R, 70 * _D2R, -45 * _D2R, 0.0, 135 * _D2R, 0.0, 0.0,
+    -90 * _D2R, 70 * _D2R, -45 * _D2R, 0.3, 135 * _D2R, 0.0, 0.0,
 ]
 CALIBRATION_JOINT_POSE_RIGHT: List[float] = [
-    90 * _D2R, 70 * _D2R, 45 * _D2R, 0.0, -135 * _D2R, 0.0, 0.0,
+    90 * _D2R, 70 * _D2R, 45 * _D2R, 0.3, -135 * _D2R, 0.0, 0.0,
 ]
 CALIBRATION_GRIPPER_WIDTH: float = 0.1  # metres, fully open
 
