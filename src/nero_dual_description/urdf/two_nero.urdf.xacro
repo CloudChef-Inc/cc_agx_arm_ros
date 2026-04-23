@@ -26,16 +26,28 @@
   <xacro:property name="torso_height"      value="$(arg torso_height)"/>
   <xacro:property name="shoulder_tilt_deg" value="$(arg shoulder_tilt_deg)"/>
   <xacro:property name="shoulder_tilt"     value="${shoulder_tilt_deg * pi / 180.0}"/>
-  <xacro:property name="shoulder_y_offset" value="${torso_width / 2.0}"/>
+  <!-- World convention (matches the webapp's three.js scene and its
+       axes-helper labels): +X = right, +Y = front, +Z = up. Lateral
+       separation is along X, front-back along Y. -->
+  <xacro:property name="shoulder_x_offset" value="${torso_width / 2.0}"/>
   <xacro:property name="shoulder_z"        value="${torso_height - 0.05}"/>
 
-  <!-- Roll each base outward so the arm's +Z axis points along ±Y instead
-       of +Z. ±pi/2 gets the arms horizontal; shoulder_tilt adds a roll
-       around the arm's own +X axis (the shoulder "cant" of the real
-       mount). Since the first rotation is itself around X, adding to the
-       same roll composes cleanly with no axis remapping. -->
-  <xacro:property name="left_shoulder_rpy"  value="${-pi / 2 - shoulder_tilt} 0 0"/>
-  <xacro:property name="right_shoulder_rpy" value="${ pi / 2 + shoulder_tilt} 0 0"/>
+  <!-- Mount rotation must match main.js::buildArms() so the URDF's TF
+       tree and the webapp's 3D scene describe the same physical
+       orientation. main.js applies (intrinsic, in order):
+         right: rotation.set(π, π/2, 0) then rotateX(+tilt)
+                →  Rx(π) · Ry(π/2) · Rx(+tilt)
+         left : rotation.y = -π/2     then rotateX(-tilt)
+                →  Ry(-π/2) · Rx(-tilt)
+       URDF rpy is extrinsic xyz (matrix = Rz(y)·Ry(p)·Rx(r)); the
+       equivalent rpy triples that produce those matrices are:
+         right: ( π + tilt, -π/2, 0 )
+         left : (   -tilt , -π/2, 0 )
+       Verified by multiplying out both forms at arbitrary tilt.
+       Gravity in base_link is (-9.81, 0, 0) for both arms under this
+       mount, matching the gravity_comp launch arg. -->
+  <xacro:property name="right_shoulder_rpy" value="${ pi + shoulder_tilt} ${-pi / 2} 0"/>
+  <xacro:property name="left_shoulder_rpy"  value="${    -shoulder_tilt} ${-pi / 2} 0"/>
 
   <!-- ===== World + torso ===== -->
   <link name="world"/>
@@ -44,7 +56,7 @@
     <visual>
       <origin xyz="0 0 ${torso_height / 2}" rpy="0 0 0"/>
       <geometry>
-        <box size="${torso_depth} ${torso_width} ${torso_height}"/>
+        <box size="${torso_width} ${torso_depth} ${torso_height}"/>
       </geometry>
       <material name="torso_grey">
         <color rgba="0.35 0.38 0.42 1.0"/>
@@ -53,7 +65,7 @@
     <collision>
       <origin xyz="0 0 ${torso_height / 2}" rpy="0 0 0"/>
       <geometry>
-        <box size="${torso_depth} ${torso_width} ${torso_height}"/>
+        <box size="${torso_width} ${torso_depth} ${torso_height}"/>
       </geometry>
     </collision>
     <inertial>
@@ -74,7 +86,7 @@
   <joint name="torso_to_left_shoulder" type="fixed">
     <parent link="torso_base"/>
     <child  link="left_shoulder_mount"/>
-    <origin xyz="0 ${ shoulder_y_offset} ${shoulder_z}"
+    <origin xyz="${-shoulder_x_offset} 0 ${shoulder_z}"
             rpy="${left_shoulder_rpy}"/>
   </joint>
 
@@ -82,7 +94,7 @@
   <joint name="torso_to_right_shoulder" type="fixed">
     <parent link="torso_base"/>
     <child  link="right_shoulder_mount"/>
-    <origin xyz="0 ${-shoulder_y_offset} ${shoulder_z}"
+    <origin xyz="${ shoulder_x_offset} 0 ${shoulder_z}"
             rpy="${right_shoulder_rpy}"/>
   </joint>
 
