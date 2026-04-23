@@ -294,6 +294,12 @@ def generate_launch_description() -> LaunchDescription:
             "shoulder_tilt_deg": ParameterValue(
                 LaunchConfiguration("shoulder_tilt_deg"), value_type=float
             ),
+            # Orient debug-circle IK target along ring normal. Harmless
+            # when quest_debug is false — the parameter is only read
+            # when a debug trajectory is active.
+            "debug_orient_to_circle": ParameterValue(
+                LaunchConfiguration("quest_debug"), value_type=bool
+            ),
         }],
     )
     quest_leader_right = Node(
@@ -307,6 +313,12 @@ def generate_launch_description() -> LaunchDescription:
             "urdf_path": nero_urdf,
             "shoulder_tilt_deg": ParameterValue(
                 LaunchConfiguration("shoulder_tilt_deg"), value_type=float
+            ),
+            # Orient debug-circle IK target along ring normal. Harmless
+            # when quest_debug is false — the parameter is only read
+            # when a debug trajectory is active.
+            "debug_orient_to_circle": ParameterValue(
+                LaunchConfiguration("quest_debug"), value_type=bool
             ),
         }],
     )

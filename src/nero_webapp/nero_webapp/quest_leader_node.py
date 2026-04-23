@@ -62,6 +62,16 @@ CALIBRATION_JOINT_POSE_RIGHT: List[float] = [
 ]
 CALIBRATION_GRIPPER_WIDTH: float = 0.1  # metres, fully open
 
+# Debug-mode circle yaw about world Z (radians). MUST match
+# main.js::DEBUG_CIRCLE_YAW_RAD and quest_teleop_node::DEBUG_CIRCLE_YAW_RAD.
+# Used when debug_orient_to_circle is enabled to force the EE to point
+# along the circle's normal (which is otherwise undefined — the
+# debug controller stream publishes identity orientation).
+DEBUG_CIRCLE_YAW_RAD = {
+    "left":  -math.pi / 6,
+    "right": +math.pi / 6,
+}
+
 COUNTDOWN_S = 5
 IK_RATE_HZ = 30.0
 # Cumulative clamp on (ctrl - ctrl_ref). 0.05 m was far too tight —
@@ -127,12 +137,20 @@ class QuestLeaderNode(Node):
         # delta `dp` from quest/robot-world into base_link before adding
         # to the FK'd `ee_ref`.
         self.declare_parameter("shoulder_tilt_deg", 20.0)
+        # Debug-only: force the IK target orientation to point the EE
+        # normal to the debug circle plane (see DEBUG_CIRCLE_YAW_RAD).
+        # Bypasses the usual controller-delta path for orientation,
+        # since the debug teleop publishes identity orientation.
+        self.declare_parameter("debug_orient_to_circle", False)
 
         self.side: str = self.get_parameter("side").value
         self.ee_link: str = self.get_parameter("ee_link").value
         urdf_path: str = self.get_parameter("urdf_path").value
         shoulder_tilt_deg: float = float(
             self.get_parameter("shoulder_tilt_deg").value
+        )
+        self._debug_orient_to_circle: bool = bool(
+            self.get_parameter("debug_orient_to_circle").value
         )
 
         if self.side not in ("left", "right"):
@@ -155,6 +173,25 @@ class QuestLeaderNode(Node):
         self.get_logger().info(
             f"[{self.side}] mount rpy (rad) = "
             f"({rpy[0]:.3f}, {rpy[1]:.3f}, {rpy[2]:.3f})"
+        )
+
+        # Precompute the EE orientation that points the gripper's
+        # approach axis (local +Z) along the debug circle's normal,
+        # expressed in base_link. Gripper "up" is aligned with world
+        # +Z, so the frame is unambiguous.
+        #
+        # Normal to the ring (world), with the ring in XZ yawed by α
+        # about Z:  n = Rz(α) · (0, 1, 0) = (-sin α,  cos α, 0).
+        # Frame built with: local_z = n, local_y = world +Z, local_x
+        # = local_y × local_z.
+        yaw = DEBUG_CIRCLE_YAW_RAD[self.side]
+        ca, sa = math.cos(yaw), math.sin(yaw)
+        local_z_w = np.array([-sa, ca, 0.0])
+        local_y_w = np.array([0.0, 0.0, 1.0])
+        local_x_w = np.cross(local_y_w, local_z_w)
+        R_normal_world = np.column_stack([local_x_w, local_y_w, local_z_w])
+        self._R_normal_base: R = R.from_matrix(
+            self._R_mount_inv.as_matrix() @ R_normal_world
         )
 
         if not urdf_path:
@@ -469,6 +506,17 @@ class QuestLeaderNode(Node):
 
         target_pos = self._ee_ref.pos + dp_base
         target_rot = dr_base * self._ee_ref.rot
+
+        if self._debug_orient_to_circle:
+            # Replace the delta-based orientation with a fixed
+            # normal-facing pose (gripper approach along world ring
+            # normal, gripper up along world +Z). Useful because the
+            # debug teleop stream has no real orientation signal, and
+            # the calibration FK orientation is unrelated to the
+            # ring's normal. This keeps the debug IK target
+            # reasonable — otherwise orientation can fight the
+            # position track, especially near the ring's edge.
+            target_rot = self._R_normal_base
 
         seed = (self._last_ik_solution
                 if self._last_ik_solution is not None
