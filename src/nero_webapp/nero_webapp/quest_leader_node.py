@@ -145,17 +145,20 @@ class QuestLeaderNode(Node):
         # Rotation from Quest (WebXR) frame → robot-world frame, as
         # extrinsic-xyz rpy in radians. WebXR is right-handed with
         # +X right, +Y up, +Z back-toward-user. Robot world is
-        # +X right, +Y front, +Z up. Mapping (operator stands in
-        # front of robot, facing it, room calibrated so operator's
-        # right = robot's right): rotate -90° about world X to take
-        # Y_quest_up → Z_world_up and Z_quest_back → -Y_world_back.
-        # If your operator stands behind the robot (or the room
-        # calibration spun the WebXR frame around world Y), set
-        # quest_to_world_rpy:='[-1.5707963, 0.0, 3.1415927]' to add
-        # a 180° yaw. Default leaves dp_quest == dp_world for the
-        # debug pipeline (rpy = 0), preserving the previous behavior
-        # of the synthetic circle. Real-Quest launches should set
-        # quest_to_world_rpy:='[-1.5707963, 0.0, 0.0]'.
+        # +X right, +Y front, +Z up.
+        #
+        # Default convention: operator stands BEHIND the robot, facing
+        # the same direction the robot faces. Then operator's "right"
+        # equals robot's right (X_quest = +X_world), Y_quest_up maps to
+        # +Z_world_up, and Z_quest_back maps to -Y_world (since +Y is
+        # robot's front and operator's back is the opposite). That is
+        # R_x(+π/2) → rpy = [+π/2, 0, 0].
+        #
+        # If the operator stands somewhere else, override at launch via
+        # quest_to_world_rpy. Default of [0,0,0] here is identity, which
+        # the launch file uses for debug mode (synthetic poses already
+        # in robot-world); the launch file substitutes [+π/2, 0, 0] for
+        # real-Quest mode.
         self.declare_parameter("quest_to_world_rpy", [0.0, 0.0, 0.0])
 
         self.side: str = self.get_parameter("side").value
