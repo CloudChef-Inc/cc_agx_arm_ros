@@ -160,6 +160,14 @@ class QuestLeaderNode(Node):
         # in robot-world); the launch file substitutes [+π/2, 0, 0] for
         # real-Quest mode.
         self.declare_parameter("quest_to_world_rpy", [0.0, 0.0, 0.0])
+        # Diagnostic flags. With debug_freeze_orientation=True, the IK
+        # target orientation is held at the calibration EE orientation
+        # (controller orientation is ignored) — useful to bisect a
+        # frame-mapping bug down to the position channel only. With
+        # debug_freeze_position=True, the IK target position is held
+        # at the calibration EE position — useful for the inverse.
+        self.declare_parameter("debug_freeze_orientation", False)
+        self.declare_parameter("debug_freeze_position", False)
 
         self.side: str = self.get_parameter("side").value
         self.ee_link: str = self.get_parameter("ee_link").value
@@ -169,6 +177,12 @@ class QuestLeaderNode(Node):
         )
         self._debug_orient_to_circle: bool = bool(
             self.get_parameter("debug_orient_to_circle").value
+        )
+        self._debug_freeze_orient: bool = bool(
+            self.get_parameter("debug_freeze_orientation").value
+        )
+        self._debug_freeze_pos: bool = bool(
+            self.get_parameter("debug_freeze_position").value
         )
         q2w_rpy = list(self.get_parameter("quest_to_world_rpy").value)
         if len(q2w_rpy) != 3:
@@ -458,7 +472,15 @@ class QuestLeaderNode(Node):
         self._last_ik_solution = self._pending_target_q.copy()
         self._countdown_remaining = 0
         self._state = STATE_READY
-        self.get_logger().info(f"[{self.side}] calibrated (sim); state=READY")
+        ctrl_eul = ctrl.rot.as_euler("xyz", degrees=True).tolist()
+        ee_eul = self._ee_ref.rot.as_euler("xyz", degrees=True).tolist()
+        self.get_logger().info(
+            f"[{self.side}] calibrated; state=READY\n"
+            f"  ctrl_ref.pos (quest)   = {ctrl.pos.tolist()}\n"
+            f"  ctrl_ref.rot (deg xyz) = {[round(x, 1) for x in ctrl_eul]}\n"
+            f"  ee_ref.pos   (base)    = {self._ee_ref.pos.tolist()}\n"
+            f"  ee_ref.rot   (deg xyz) = {[round(x, 1) for x in ee_eul]}"
+        )
 
     def _preview_srv(self, request: SetBool.Request, response: SetBool.Response):
         if request.data:
@@ -510,19 +532,23 @@ class QuestLeaderNode(Node):
             return
 
         # Delta in WebXR (Quest) frame, then rotated into robot-world.
-        # WebXR: +X right, +Y up, +Z back-toward-user.
-        # Robot:  +X right, +Y front, +Z up.
-        # `_R_q2w` (set from the quest_to_world_rpy parameter) carries
-        # WebXR axes onto robot-world axes for both the position delta
-        # and the orientation delta. With rpy = (0,0,0) this is identity
-        # (preserves the synthetic-debug pipeline, which already authors
-        # poses in robot-world).
+        # WebXR (per spec): +X right, +Y up, +Z back-toward-user — but
+        # whose right/up/back? The local-floor reference space's axes
+        # depend on the user agent (on Quest, typically the guardian's
+        # forward direction, NOT the user's current facing). So the
+        # rotation R_q2w must be measured for the actual setup, not
+        # assumed. The `quest_to_world_rpy` parameter carries this.
+        # With rpy = (0,0,0) this is identity (preserves the
+        # synthetic-debug pipeline, which authors poses in robot-world).
         dp_quest = ctrl.pos - self._ctrl_ref.pos
         dr_quest = ctrl.rot * self._ctrl_ref.rot.inv()
         dp_world = self._R_q2w.apply(dp_quest)
         # Conjugation: WebXR-frame rotation re-expressed in robot-world.
         dr_world = self._R_q2w * dr_quest * self._R_q2w_inv
         dp_world, dr_world = _clamp_delta(dp_world, dr_world)
+
+        if self._debug_freeze_pos:
+            dp_world = np.zeros(3)
 
         # Rotate delta into this arm's base_link frame, because
         # self._ee_ref comes from FK on the single-arm URDF and is
@@ -542,40 +568,35 @@ class QuestLeaderNode(Node):
             # rotates to face the yawed ring.
             target_rot = self._R_yaw_base * self._ee_ref.rot
 
+        if self._debug_freeze_orient:
+            # Bypass the controller-orientation channel entirely so any
+            # IK-convergence / direction problem must be in the position
+            # path. Useful for bisecting frame-mapping bugs.
+            target_rot = self._ee_ref.rot
+
         seed = (self._last_ik_solution
                 if self._last_ik_solution is not None
                 else np.zeros(N_ARM))
         q_sol, ok, err_norm = self._ik(target_pos, target_rot, seed)
+
+        # Always-on diagnostic (1 Hz): includes raw dp_quest pre-rotation
+        # so we can verify R_q2w by moving the controller in known
+        # directions and reading dp_world.
+        now = time.time()
+        if now - self._last_ik_ok_log > 1.0:
+            r3 = lambda v: np.round(v, 3).tolist()
+            self.get_logger().info(
+                f"[{self.side}] {'OK' if ok else 'FAIL'} err={err_norm:.4f} "
+                f"dp_quest={r3(dp_quest)} dp_world={r3(dp_world)} "
+                f"dp_base={r3(dp_base)} target_pos={r3(target_pos)} "
+                f"ee_ref_pos={r3(self._ee_ref.pos)}"
+            )
+            self._last_ik_ok_log = now
+
         if not ok:
-            now = time.time()
-            if now - self._last_ik_fail_log > 1.0:
-                seed_ee = self._fk(seed)
-                self.get_logger().warn(
-                    f"[{self.side}] IK did not converge (err={err_norm:.4f}) "
-                    f"target_pos={target_pos.tolist()} "
-                    f"ee_ref_pos={self._ee_ref.pos.tolist()} "
-                    f"dp_world={dp_world.tolist()} "
-                    f"dp_base={dp_base.tolist()} "
-                    f"seed_ee_pos={seed_ee.pos.tolist()} "
-                    f"seed_q={seed.tolist()}"
-                )
-                self._last_ik_fail_log = now
             return
 
         self._last_ik_solution = q_sol
-
-        now = time.time()
-        if now - self._last_ik_ok_log > 1.0:
-            sol_ee = self._fk(q_sol)
-            self.get_logger().info(
-                f"[{self.side}] IK ok (err={err_norm:.4f}) "
-                f"dp_world={np.round(dp_world, 3).tolist()} "
-                f"dp_base={np.round(dp_base, 3).tolist()} "
-                f"target_pos={np.round(target_pos, 3).tolist()} "
-                f"sol_ee_pos={np.round(sol_ee.pos, 3).tolist()} "
-                f"q_sol={np.round(q_sol, 3).tolist()}"
-            )
-            self._last_ik_ok_log = now
 
         out = JointState()
         out.header.stamp = self.get_clock().now().to_msg()

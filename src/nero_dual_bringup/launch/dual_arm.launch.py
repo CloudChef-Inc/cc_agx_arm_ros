@@ -173,6 +173,18 @@ def generate_launch_description() -> LaunchDescription:
                     "then http://localhost:4443/index.html on the Quest "
                     "(localhost is a secure context, so WebXR works).",
     )
+    quest_freeze_orient_arg = DeclareLaunchArgument(
+        "quest_freeze_orient", default_value="false",
+        description="Diagnostic: hold IK target orientation at the calibration "
+                    "EE orientation. Use to bisect frame-mapping bugs to the "
+                    "position channel only.",
+    )
+    quest_freeze_pos_arg = DeclareLaunchArgument(
+        "quest_freeze_pos", default_value="false",
+        description="Diagnostic: hold IK target position at the calibration "
+                    "EE position. Use to bisect frame-mapping bugs to the "
+                    "orientation channel only.",
+    )
     quest_to_world_rpy_arg = DeclareLaunchArgument(
         "quest_to_world_rpy", default_value="[]",
         description="Rotation Quest(WebXR) → robot-world as extrinsic xyz "
@@ -345,6 +357,12 @@ def generate_launch_description() -> LaunchDescription:
             "debug_orient_to_circle": ParameterValue(
                 LaunchConfiguration("quest_debug"), value_type=bool
             ),
+            "debug_freeze_orientation": ParameterValue(
+                LaunchConfiguration("quest_freeze_orient"), value_type=bool
+            ),
+            "debug_freeze_position": ParameterValue(
+                LaunchConfiguration("quest_freeze_pos"), value_type=bool
+            ),
             "quest_to_world_rpy": rpy,
         }
         return [
@@ -385,6 +403,8 @@ def generate_launch_description() -> LaunchDescription:
         quest_debug_arg,
         quest_use_ssl_arg,
         quest_to_world_rpy_arg,
+        quest_freeze_orient_arg,
+        quest_freeze_pos_arg,
         debug_circle_period_arg,
         rsp_node,
         left_arm,
