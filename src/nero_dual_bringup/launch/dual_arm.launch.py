@@ -24,9 +24,9 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -313,74 +313,51 @@ def generate_launch_description() -> LaunchDescription:
     # FK/IK is done in-process via Pinocchio on the single-arm URDF
     # (same one gravity_comp loads). No MoveIt / move_group required —
     # avoids TF-tree conflicts against the composed dual-arm publisher.
-    quest_leader_left = Node(
-        package="nero_webapp",
-        executable="quest_leader_node",
-        name="quest_leader_left",
-        output="screen",
-        parameters=[{
-            "side": "left",
+    #
+    # quest_to_world_rpy needs a Python list at param-pass time and ROS
+    # launch can't carry a list through PythonExpression / ParameterValue,
+    # so we build the two leader nodes inside an OpaqueFunction where we
+    # can read LaunchConfiguration values eagerly and parse the rpy string.
+    def _make_quest_leaders(context, *args, **kwargs):
+        import ast
+        rpy_str = LaunchConfiguration("quest_to_world_rpy").perform(context).strip()
+        debug_str = LaunchConfiguration("quest_debug").perform(context).strip().lower()
+        debug = debug_str in ("true", "1", "yes", "on")
+        if rpy_str and rpy_str != "[]":
+            rpy = list(ast.literal_eval(rpy_str))
+        elif debug:
+            rpy = [0.0, 0.0, 0.0]
+        else:
+            rpy = [-1.5707963267948966, 0.0, 0.0]
+
+        common = {
             "ee_link": "gripper_flange",
             "urdf_path": nero_urdf,
             "shoulder_tilt_deg": ParameterValue(
                 LaunchConfiguration("shoulder_tilt_deg"), value_type=float
             ),
-            # Orient debug-circle IK target along ring normal. Harmless
-            # when quest_debug is false — the parameter is only read
-            # when a debug trajectory is active.
             "debug_orient_to_circle": ParameterValue(
                 LaunchConfiguration("quest_debug"), value_type=bool
             ),
-            # Quest(WebXR) → robot-world rotation. If the user passed
-            # quest_to_world_rpy explicitly, honor it; otherwise pick
-            # identity in debug mode (synthetic poses already in
-            # robot-world) and R_x(-π/2) for live Quest streaming.
-            "quest_to_world_rpy": ParameterValue(
-                PythonExpression([
-                    "(", LaunchConfiguration("quest_to_world_rpy"), " or ",
-                    "([0.0, 0.0, 0.0] if '",
-                    LaunchConfiguration("quest_debug"),
-                    "'.lower() in ('true','1','yes','on') ",
-                    "else [-1.5707963267948966, 0.0, 0.0]))",
-                ]),
-                value_type=[float],
+            "quest_to_world_rpy": rpy,
+        }
+        return [
+            Node(
+                package="nero_webapp",
+                executable="quest_leader_node",
+                name="quest_leader_left",
+                output="screen",
+                parameters=[{"side": "left", **common}],
             ),
-        }],
-    )
-    quest_leader_right = Node(
-        package="nero_webapp",
-        executable="quest_leader_node",
-        name="quest_leader_right",
-        output="screen",
-        parameters=[{
-            "side": "right",
-            "ee_link": "gripper_flange",
-            "urdf_path": nero_urdf,
-            "shoulder_tilt_deg": ParameterValue(
-                LaunchConfiguration("shoulder_tilt_deg"), value_type=float
+            Node(
+                package="nero_webapp",
+                executable="quest_leader_node",
+                name="quest_leader_right",
+                output="screen",
+                parameters=[{"side": "right", **common}],
             ),
-            # Orient debug-circle IK target along ring normal. Harmless
-            # when quest_debug is false — the parameter is only read
-            # when a debug trajectory is active.
-            "debug_orient_to_circle": ParameterValue(
-                LaunchConfiguration("quest_debug"), value_type=bool
-            ),
-            # Quest(WebXR) → robot-world rotation. If the user passed
-            # quest_to_world_rpy explicitly, honor it; otherwise pick
-            # identity in debug mode (synthetic poses already in
-            # robot-world) and R_x(-π/2) for live Quest streaming.
-            "quest_to_world_rpy": ParameterValue(
-                PythonExpression([
-                    "(", LaunchConfiguration("quest_to_world_rpy"), " or ",
-                    "([0.0, 0.0, 0.0] if '",
-                    LaunchConfiguration("quest_debug"),
-                    "'.lower() in ('true','1','yes','on') ",
-                    "else [-1.5707963267948966, 0.0, 0.0]))",
-                ]),
-                value_type=[float],
-            ),
-        }],
-    )
+        ]
+    quest_leaders = OpaqueFunction(function=_make_quest_leaders)
 
     return LaunchDescription([
         left_can_arg,
@@ -410,6 +387,5 @@ def generate_launch_description() -> LaunchDescription:
         gravity_comp_left,
         gravity_comp_right,
         quest_teleop,
-        quest_leader_left,
-        quest_leader_right,
+        quest_leaders,
     ])
