@@ -142,6 +142,21 @@ class QuestLeaderNode(Node):
         # Bypasses the usual controller-delta path for orientation,
         # since the debug teleop publishes identity orientation.
         self.declare_parameter("debug_orient_to_circle", False)
+        # Rotation from Quest (WebXR) frame → robot-world frame, as
+        # extrinsic-xyz rpy in radians. WebXR is right-handed with
+        # +X right, +Y up, +Z back-toward-user. Robot world is
+        # +X right, +Y front, +Z up. Mapping (operator stands in
+        # front of robot, facing it, room calibrated so operator's
+        # right = robot's right): rotate -90° about world X to take
+        # Y_quest_up → Z_world_up and Z_quest_back → -Y_world_back.
+        # If your operator stands behind the robot (or the room
+        # calibration spun the WebXR frame around world Y), set
+        # quest_to_world_rpy:='[-1.5707963, 0.0, 3.1415927]' to add
+        # a 180° yaw. Default leaves dp_quest == dp_world for the
+        # debug pipeline (rpy = 0), preserving the previous behavior
+        # of the synthetic circle. Real-Quest launches should set
+        # quest_to_world_rpy:='[-1.5707963, 0.0, 0.0]'.
+        self.declare_parameter("quest_to_world_rpy", [0.0, 0.0, 0.0])
 
         self.side: str = self.get_parameter("side").value
         self.ee_link: str = self.get_parameter("ee_link").value
@@ -151,6 +166,17 @@ class QuestLeaderNode(Node):
         )
         self._debug_orient_to_circle: bool = bool(
             self.get_parameter("debug_orient_to_circle").value
+        )
+        q2w_rpy = list(self.get_parameter("quest_to_world_rpy").value)
+        if len(q2w_rpy) != 3:
+            raise ValueError(
+                f"quest_to_world_rpy must be length 3 (rpy in rad), got {q2w_rpy}"
+            )
+        self._R_q2w: R = R.from_euler("xyz", q2w_rpy)
+        self._R_q2w_inv: R = self._R_q2w.inv()
+        self.get_logger().info(
+            f"[quest→world] rpy(rad)={q2w_rpy}  "
+            f"(identity rotation iff all zeros — debug-mode default)"
         )
 
         if self.side not in ("left", "right"):
@@ -480,11 +506,19 @@ class QuestLeaderNode(Node):
             self._follow_on = False
             return
 
-        # Delta in robot-world (= quest-world for now: no transform
-        # applied between the two; the Quest stream is treated as
-        # already in robot-world coordinates).
-        dp_world = ctrl.pos - self._ctrl_ref.pos
-        dr_world = ctrl.rot * self._ctrl_ref.rot.inv()
+        # Delta in WebXR (Quest) frame, then rotated into robot-world.
+        # WebXR: +X right, +Y up, +Z back-toward-user.
+        # Robot:  +X right, +Y front, +Z up.
+        # `_R_q2w` (set from the quest_to_world_rpy parameter) carries
+        # WebXR axes onto robot-world axes for both the position delta
+        # and the orientation delta. With rpy = (0,0,0) this is identity
+        # (preserves the synthetic-debug pipeline, which already authors
+        # poses in robot-world).
+        dp_quest = ctrl.pos - self._ctrl_ref.pos
+        dr_quest = ctrl.rot * self._ctrl_ref.rot.inv()
+        dp_world = self._R_q2w.apply(dp_quest)
+        # Conjugation: WebXR-frame rotation re-expressed in robot-world.
+        dr_world = self._R_q2w * dr_quest * self._R_q2w_inv
         dp_world, dr_world = _clamp_delta(dp_world, dr_world)
 
         # Rotate delta into this arm's base_link frame, because

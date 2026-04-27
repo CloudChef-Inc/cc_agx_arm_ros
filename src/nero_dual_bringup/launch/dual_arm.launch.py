@@ -26,7 +26,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -172,6 +172,15 @@ def generate_launch_description() -> LaunchDescription:
                     "and the recommended path is `adb reverse tcp:4443 tcp:4443` "
                     "then http://localhost:4443/index.html on the Quest "
                     "(localhost is a secure context, so WebXR works).",
+    )
+    quest_to_world_rpy_arg = DeclareLaunchArgument(
+        "quest_to_world_rpy", default_value="[]",
+        description="Rotation Quest(WebXR) → robot-world as extrinsic xyz "
+                    "rpy in radians, e.g. '[-1.5707963, 0.0, 0.0]'. Default "
+                    "(empty) auto-selects: identity in debug mode (synthetic "
+                    "poses are already authored in robot-world), and "
+                    "[-π/2, 0, 0] when streaming real Quest data (maps "
+                    "Y_quest_up → Z_world_up, Z_quest_back → +Y_world_back).",
     )
     debug_circle_period_arg = DeclareLaunchArgument(
         "debug_circle_period_s", default_value="2.0",
@@ -322,6 +331,20 @@ def generate_launch_description() -> LaunchDescription:
             "debug_orient_to_circle": ParameterValue(
                 LaunchConfiguration("quest_debug"), value_type=bool
             ),
+            # Quest(WebXR) → robot-world rotation. If the user passed
+            # quest_to_world_rpy explicitly, honor it; otherwise pick
+            # identity in debug mode (synthetic poses already in
+            # robot-world) and R_x(-π/2) for live Quest streaming.
+            "quest_to_world_rpy": ParameterValue(
+                PythonExpression([
+                    "(", LaunchConfiguration("quest_to_world_rpy"), " or ",
+                    "([0.0, 0.0, 0.0] if '",
+                    LaunchConfiguration("quest_debug"),
+                    "'.lower() in ('true','1','yes','on') ",
+                    "else [-1.5707963267948966, 0.0, 0.0]))",
+                ]),
+                value_type=[float],
+            ),
         }],
     )
     quest_leader_right = Node(
@@ -341,6 +364,20 @@ def generate_launch_description() -> LaunchDescription:
             # when a debug trajectory is active.
             "debug_orient_to_circle": ParameterValue(
                 LaunchConfiguration("quest_debug"), value_type=bool
+            ),
+            # Quest(WebXR) → robot-world rotation. If the user passed
+            # quest_to_world_rpy explicitly, honor it; otherwise pick
+            # identity in debug mode (synthetic poses already in
+            # robot-world) and R_x(-π/2) for live Quest streaming.
+            "quest_to_world_rpy": ParameterValue(
+                PythonExpression([
+                    "(", LaunchConfiguration("quest_to_world_rpy"), " or ",
+                    "([0.0, 0.0, 0.0] if '",
+                    LaunchConfiguration("quest_debug"),
+                    "'.lower() in ('true','1','yes','on') ",
+                    "else [-1.5707963267948966, 0.0, 0.0]))",
+                ]),
+                value_type=[float],
             ),
         }],
     )
@@ -364,6 +401,7 @@ def generate_launch_description() -> LaunchDescription:
         quest_port_arg,
         quest_debug_arg,
         quest_use_ssl_arg,
+        quest_to_world_rpy_arg,
         debug_circle_period_arg,
         rsp_node,
         left_arm,
