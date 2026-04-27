@@ -71,11 +71,13 @@ class QuestTeleopNode(Node):
         self.declare_parameter("debug_sinusoidal", False)
         self.declare_parameter("frame_id", "quest_world")
         self.declare_parameter("debug_circle_period_s", DEBUG_CIRCLE_PERIOD)
+        self.declare_parameter("use_ssl", True)
 
         self.host = self.get_parameter("host").value
         self.port = int(self.get_parameter("port").value)
         self.debug = bool(self.get_parameter("debug_sinusoidal").value)
         self.frame_id = self.get_parameter("frame_id").value
+        self.use_ssl = bool(self.get_parameter("use_ssl").value)
         self._circle_period = float(
             self.get_parameter("debug_circle_period_s").value
         )
@@ -123,11 +125,29 @@ class QuestTeleopNode(Node):
         self._teleop = Teleop(settings=settings)
         self._teleop.subscribe(self._on_xr_update)
 
-        self._server_thread = threading.Thread(target=self._teleop.run, daemon=True)
+        if self.use_ssl:
+            self._server_thread = threading.Thread(target=self._teleop.run, daemon=True)
+            scheme = "https"
+        else:
+            # Bypass Teleop.run() — it hardcodes SSL. Run uvicorn directly on
+            # the underlying FastAPI app over plain HTTP. Quest browsers reject
+            # self-signed certs silently (ERR_EMPTY_RESPONSE), so for the
+            # adb-reverse → localhost path we serve plain HTTP. WebXR's
+            # secure-context requirement is satisfied because `localhost` is
+            # treated as secure by browsers regardless of scheme.
+            import uvicorn
+            app = getattr(self._teleop, "_Teleop__app")
+            self._server_thread = threading.Thread(
+                target=lambda: uvicorn.run(
+                    app, host=self.host, port=self.port, log_level="warning"
+                ),
+                daemon=True,
+            )
+            scheme = "http"
         self._server_thread.start()
         self.get_logger().info(
-            f"teleop-xr server running on https://{self.host}:{self.port}  "
-            "(open this URL on Quest browser and accept the cert)"
+            f"teleop-xr server running on {scheme}://{self.host}:{self.port}  "
+            f"(on Quest: {scheme}://localhost:{self.port}/index.html via adb reverse)"
         )
 
     def _on_xr_update(self, pose, xr_state: dict) -> None:

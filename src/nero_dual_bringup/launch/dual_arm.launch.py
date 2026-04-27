@@ -164,6 +164,15 @@ def generate_launch_description() -> LaunchDescription:
         description="If true, quest_teleop_node fabricates sinusoidal poses "
                     "instead of running the WebXR server (no headset needed).",
     )
+    quest_use_ssl_arg = DeclareLaunchArgument(
+        "quest_use_ssl", default_value="false",
+        description="If true, teleop-xr serves over HTTPS with its self-signed "
+                    "cert. Quest browser typically rejects self-signed certs "
+                    "silently (ERR_EMPTY_RESPONSE), so default is plain HTTP "
+                    "and the recommended path is `adb reverse tcp:4443 tcp:4443` "
+                    "then http://localhost:4443/index.html on the Quest "
+                    "(localhost is a secure context, so WebXR works).",
+    )
     debug_circle_period_arg = DeclareLaunchArgument(
         "debug_circle_period_s", default_value="2.0",
         description="Seconds per revolution for the debug controller circle. "
@@ -286,6 +295,7 @@ def generate_launch_description() -> LaunchDescription:
             "host": LaunchConfiguration("quest_host"),
             "port": ParameterValue(LaunchConfiguration("quest_port"), value_type=int),
             "debug_sinusoidal": ParameterValue(LaunchConfiguration("quest_debug"), value_type=bool),
+            "use_ssl": ParameterValue(LaunchConfiguration("quest_use_ssl"), value_type=bool),
             "debug_circle_period_s": ParameterValue(
                 LaunchConfiguration("debug_circle_period_s"), value_type=float
             ),
@@ -353,6 +363,7 @@ def generate_launch_description() -> LaunchDescription:
         quest_host_arg,
         quest_port_arg,
         quest_debug_arg,
+        quest_use_ssl_arg,
         debug_circle_period_arg,
         rsp_node,
         left_arm,
