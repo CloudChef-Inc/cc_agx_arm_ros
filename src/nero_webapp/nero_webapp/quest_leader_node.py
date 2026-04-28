@@ -54,11 +54,15 @@ N_ARM = 7
 # Bench-tuned values: operator holds Quest controllers out in front at
 # shoulder height with palms facing inward, fingers wrapping the grip.
 _D2R = math.pi / 180.0
+# q6 is a wrist singularity at zero (joint5 and joint7 axes align —
+# Jacobian rank drops, DLS can't escape). Biasing q6 to ~17° keeps the
+# IK seed off the singular manifold; without this every IK call returns
+# err≈0.05 and the frame is dropped, freezing the ghost.
 CALIBRATION_JOINT_POSE_LEFT: List[float] = [
-    -90 * _D2R, 70 * _D2R, -45 * _D2R, 0.0, 135 * _D2R, 0.0, 0.0,
+    -90 * _D2R, 70 * _D2R, -45 * _D2R, 0.0, 135 * _D2R, 17 * _D2R, 0.0,
 ]
 CALIBRATION_JOINT_POSE_RIGHT: List[float] = [
-    90 * _D2R, 70 * _D2R, 45 * _D2R, 0.0, -135 * _D2R, 0.0, 0.0,
+    90 * _D2R, 70 * _D2R, 45 * _D2R, 0.0, -135 * _D2R, 17 * _D2R, 0.0,
 ]
 CALIBRATION_GRIPPER_WIDTH: float = 0.1  # metres, fully open
 
