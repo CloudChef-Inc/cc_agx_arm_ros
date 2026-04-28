@@ -142,23 +142,16 @@ class QuestLeaderNode(Node):
         # Bypasses the usual controller-delta path for orientation,
         # since the debug teleop publishes identity orientation.
         self.declare_parameter("debug_orient_to_circle", False)
-        # Rotation from Quest (WebXR) frame → robot-world frame, as
-        # extrinsic-xyz rpy in radians. WebXR is right-handed with
-        # +X right, +Y up, +Z back-toward-user. Robot world is
-        # +X right, +Y front, +Z up.
+        # Rotation from Quest stream frame → robot-world, as extrinsic-
+        # xyz rpy in radians. teleop_xr publishes in ROS / REP-103
+        # convention (X=forward, Y=left, Z=up), NOT raw WebXR. Robot
+        # world is (X=right, Y=front, Z=up). For an operator standing
+        # behind the robot facing the same direction, R_z(+π/2) maps
+        # one onto the other (rpy = [0, 0, +π/2]).
         #
-        # Default convention: operator stands BEHIND the robot, facing
-        # the same direction the robot faces. Then operator's "right"
-        # equals robot's right (X_quest = +X_world), Y_quest_up maps to
-        # +Z_world_up, and Z_quest_back maps to -Y_world (since +Y is
-        # robot's front and operator's back is the opposite). That is
-        # R_x(+π/2) → rpy = [+π/2, 0, 0].
-        #
-        # If the operator stands somewhere else, override at launch via
-        # quest_to_world_rpy. Default of [0,0,0] here is identity, which
-        # the launch file uses for debug mode (synthetic poses already
-        # in robot-world); the launch file substitutes [+π/2, 0, 0] for
-        # real-Quest mode.
+        # Default of [0,0,0] here is identity, used by debug mode
+        # (synthetic poses already authored in robot-world). The launch
+        # file substitutes [0, 0, +π/2] for real-Quest mode.
         self.declare_parameter("quest_to_world_rpy", [0.0, 0.0, 0.0])
         # Diagnostic flags. With debug_freeze_orientation=True, the IK
         # target orientation is held at the calibration EE orientation

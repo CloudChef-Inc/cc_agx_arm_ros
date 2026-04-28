@@ -187,13 +187,14 @@ def generate_launch_description() -> LaunchDescription:
     )
     quest_to_world_rpy_arg = DeclareLaunchArgument(
         "quest_to_world_rpy", default_value="[]",
-        description="Rotation Quest(WebXR) → robot-world as extrinsic xyz "
-                    "rpy in radians. Default (empty) auto-selects: identity "
-                    "in debug mode (synthetic poses are already authored in "
-                    "robot-world), and [+π/2, 0, 0] for real Quest streaming "
-                    "with the operator standing BEHIND the robot, facing the "
-                    "same direction (X_quest=op's_right=robot's_right, "
-                    "Y_quest_up=+Z_world, Z_quest_back=-Y_world).",
+        description="Rotation Quest → robot-world as extrinsic xyz rpy in "
+                    "radians. Default (empty) auto-selects: identity in debug "
+                    "mode (synthetic poses are already authored in robot-world), "
+                    "and [0, 0, +π/2] for real Quest streaming. teleop_xr "
+                    "publishes in REP-103 ROS convention (X=forward, Y=left, "
+                    "Z=up); robot world is (X=right, Y=front, Z=up); R_z(+π/2) "
+                    "carries one onto the other for an operator standing behind "
+                    "the robot facing the same direction.",
     )
     debug_circle_period_arg = DeclareLaunchArgument(
         "debug_circle_period_s", default_value="2.0",
@@ -341,12 +342,17 @@ def generate_launch_description() -> LaunchDescription:
         elif debug:
             rpy = [0.0, 0.0, 0.0]
         else:
-            # R_x(+π/2): operator stands behind robot, facing forward
-            # (same direction the robot faces). Maps:
-            #   X_quest_right → +X_world_right     (operator's right = robot's right)
-            #   Y_quest_up    → +Z_world_up
-            #   Z_quest_back  → -Y_world           (op's back = -Y, since robot front = +Y)
-            rpy = [1.5707963267948966, 0.0, 0.0]
+            # teleop_xr publishes poses in ROS/REP-103 convention
+            # (X=forward, Y=left, Z=up), NOT raw WebXR (X=right, Y=up,
+            # Z=back). Robot world is (X=right, Y=front, Z=up). With
+            # the operator standing behind the robot facing the same
+            # direction:
+            #   X_quest (forward)   → +Y_world (front)
+            #   Y_quest (left)      → -X_world
+            #   Z_quest (up)        → +Z_world (up)
+            # That is R_z(+π/2). Verified empirically against move
+            # right/up/forward → dp_quest deltas.
+            rpy = [0.0, 0.0, 1.5707963267948966]
 
         common = {
             "ee_link": "gripper_flange",
