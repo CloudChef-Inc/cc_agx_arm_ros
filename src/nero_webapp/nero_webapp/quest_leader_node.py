@@ -54,15 +54,11 @@ N_ARM = 7
 # Bench-tuned values: operator holds Quest controllers out in front at
 # shoulder height with palms facing inward, fingers wrapping the grip.
 _D2R = math.pi / 180.0
-# q6 is a wrist singularity at zero (joint5 and joint7 axes align —
-# Jacobian rank drops, DLS can't escape). Biasing q6 to ~17° keeps the
-# IK seed off the singular manifold; without this every IK call returns
-# err≈0.05 and the frame is dropped, freezing the ghost.
 CALIBRATION_JOINT_POSE_LEFT: List[float] = [
-    -90 * _D2R, 70 * _D2R, -45 * _D2R, 0.0, 135 * _D2R, 17 * _D2R, 0.0,
+    -90 * _D2R, 70 * _D2R, -45 * _D2R, 0.0, 135 * _D2R, 0.0, 0.0,
 ]
 CALIBRATION_JOINT_POSE_RIGHT: List[float] = [
-    90 * _D2R, 70 * _D2R, 45 * _D2R, 0.0, -135 * _D2R, 17 * _D2R, 0.0,
+    90 * _D2R, 70 * _D2R, 45 * _D2R, 0.0, -135 * _D2R, 0.0, 0.0,
 ]
 CALIBRATION_GRIPPER_WIDTH: float = 0.1  # metres, fully open
 
@@ -85,13 +81,30 @@ MAX_DP = 0.50
 MAX_DR_DEG = 90.0
 STREAM_STALL_S = 0.5
 
-# DLS IK params.
-IK_MAX_ITERS = 30
-IK_EPS = 1e-3
-IK_DAMPING = 1e-4
-# Cap ‖dq‖ per DLS iteration (rad). Near a singularity, even damped
-# DLS can produce steps big enough to skip into a different IK
-# branch; clamping the step keeps the solver local to the seed.
+# Singularity-robust IK params.
+#   The 7-DOF nero arm has a wrist singularity at q6 = 0 (joint5 and
+#   joint7 axes align → J loses one rank). Plain DLS with a fixed tiny
+#   damping fails to converge there: the step in the singular direction
+#   shrinks but doesn't vanish, the solver burns iterations, and we
+#   return non-converged. Solution: SVD-based pseudoinverse with
+#   damping that ramps up as the smallest singular value of J shrinks
+#   (Wampler-Nakamura SR-inverse). Away from singularities the damping
+#   is at IK_DAMPING_MIN (≈ unweighted pinv); at the singularity the
+#   damping smoothly rises to IK_DAMPING_MAX, trading exact tracking
+#   in the rank-deficient direction (where motion is impossible anyway)
+#   for numerical stability.
+IK_MAX_ITERS = 50
+IK_EPS = 5e-3                # ≈ 5 mm / 0.3°: tracking-grade convergence
+IK_DAMPING_MIN = 1e-4        # well-conditioned damping
+IK_DAMPING_MAX = 1e-1        # damping at the singularity
+IK_SIGMA_THRESH = 1e-2       # σ_min below this triggers damping ramp
+# Even when the loop stops short of IK_EPS, the last iterate is usable
+# for teleop tracking as long as the residual is small. This threshold
+# lets near-singular frames still drive the ghost instead of dropping.
+IK_TRACK_TOL = 5e-2          # ~5 cm / 3° max acceptable for tracking
+# Cap ‖dq‖ per iteration (rad). Even SR-DLS can produce a step big
+# enough to skip across the singular manifold into a different IK
+# branch; clamping keeps the solver local to the seed.
 IK_MAX_STEP = 0.3
 
 STATE_IDLE = "IDLE"
@@ -359,7 +372,13 @@ class QuestLeaderNode(Node):
         target_rot: R,
         q_seed: np.ndarray,
     ) -> tuple[np.ndarray, bool, float]:
-        """Damped least-squares IK. Returns (arm_q, success, final_err_norm)."""
+        """Singularity-robust IK (SR-DLS). Returns (arm_q, success, err_norm).
+
+        success is True when err_norm < IK_EPS (fully converged) OR
+        err_norm < IK_TRACK_TOL with a finished iteration budget — the
+        latter so frames near a singularity still produce a usable
+        tracking solution rather than dropping out.
+        """
         q_arm = np.array(q_seed, dtype=float).copy()
         target_se3 = pin.SE3(target_rot.as_matrix(), target_pos)
         err_norm = float("inf")
@@ -372,15 +391,29 @@ class QuestLeaderNode(Node):
             err_norm = float(np.linalg.norm(err))
             if err_norm < IK_EPS:
                 return q_arm, True, err_norm
+
             J_full = pin.computeFrameJacobian(
                 self.model, self.data, q_full, self._ee_fid, pin.LOCAL
             )
-            J = J_full[:, self._v_indices]
-            # Damped least squares: dq = J^T (J J^T + λ²I)^-1 err
-            JJt = J @ J.T + (IK_DAMPING ** 2) * np.eye(6)
-            dq_arm = J.T @ np.linalg.solve(JJt, err)
-            # Cap step norm so a near-singular iteration can't leap
-            # into a wound-up IK branch.
+            J = J_full[:, self._v_indices]  # (6, N_ARM)
+
+            # SVD-based singularity-robust pseudoinverse. Damping is
+            # adapted to the smallest singular value of J: at
+            # well-conditioned configs (σ_min ≥ IK_SIGMA_THRESH) it
+            # stays at IK_DAMPING_MIN; as J approaches rank deficiency
+            # it ramps quadratically up to IK_DAMPING_MAX, sacrificing
+            # exactness in the rank-deficient direction (where the EE
+            # cannot move anyway) for numerical stability.
+            U, S, Vt = np.linalg.svd(J, full_matrices=False)  # 6×6, 6, 6×N
+            sigma_min = float(S[-1])
+            ratio2 = max(0.0, 1.0 - (sigma_min / IK_SIGMA_THRESH) ** 2)
+            lam2 = (IK_DAMPING_MIN ** 2) + ratio2 * (IK_DAMPING_MAX ** 2)
+            sigma_inv = S / (S * S + lam2)         # damped reciprocals
+            # J^+ = V Σ_damped U^T  (shape: N_ARM × 6)
+            dq_arm = (Vt.T * sigma_inv) @ (U.T @ err)
+
+            # Step cap — even SR-DLS can leap across the singular
+            # manifold into a wound-up IK branch on a single iteration.
             step_n = float(np.linalg.norm(dq_arm))
             if step_n > IK_MAX_STEP:
                 dq_arm = dq_arm * (IK_MAX_STEP / step_n)
@@ -388,7 +421,11 @@ class QuestLeaderNode(Node):
             # Project onto joint limits — stops the solver reporting
             # solutions the hardware can't reach.
             q_arm = np.clip(q_arm, self._q_lower, self._q_upper)
-        return q_arm, False, err_norm
+
+        # Out of iterations. Accept the iterate as a tracking solution
+        # if it's close enough — otherwise the ghost would freeze every
+        # time the arm passes near a wrist-singular config.
+        return q_arm, err_norm < IK_TRACK_TOL, err_norm
 
     # ---------- services ----------
     def _calibrate_srv(self, request: Trigger.Request, response: Trigger.Response):
