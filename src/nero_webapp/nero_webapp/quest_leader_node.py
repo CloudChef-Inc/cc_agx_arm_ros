@@ -572,17 +572,35 @@ class QuestLeaderNode(Node):
                 else np.zeros(N_ARM))
         q_sol, ok, err_norm = self._ik(target_pos, target_rot, seed)
 
-        # Always-on diagnostic (1 Hz): includes raw dp_quest pre-rotation
-        # so we can verify R_q2w by moving the controller in known
-        # directions and reading dp_world.
+        # Always-on diagnostic (1 Hz). Logs raw dp_quest / dr_quest
+        # pre-rotation alongside their re-expressed-in-world forms, so
+        # R_q2w can be verified empirically: move/rotate the controller
+        # in a known direction and read dp_world / dr_world.
+        #
+        # Rotations are printed as axis-angle (deg, unit-vector axis).
+        # For a single-axis rotation test (e.g. yaw the controller 30°
+        # to the operator's right), axis-angle reads off the result
+        # directly: |angle| ≈ 30, axis ≈ ±world-Z.
         now = time.time()
         if now - self._last_ik_ok_log > 1.0:
             r3 = lambda v: np.round(v, 3).tolist()
+            def axang(rot: R) -> str:
+                rv = rot.as_rotvec()
+                ang = float(np.linalg.norm(rv))
+                if ang < 1e-6:
+                    return "ang=0.0° axis=[0,0,0]"
+                axis = rv / ang
+                return (
+                    f"ang={math.degrees(ang):+.1f}° "
+                    f"axis=[{axis[0]:+.2f},{axis[1]:+.2f},{axis[2]:+.2f}]"
+                )
             self.get_logger().info(
-                f"[{self.side}] {'OK' if ok else 'FAIL'} err={err_norm:.4f} "
-                f"dp_quest={r3(dp_quest)} dp_world={r3(dp_world)} "
-                f"dp_base={r3(dp_base)} target_pos={r3(target_pos)} "
-                f"ee_ref_pos={r3(self._ee_ref.pos)}"
+                f"[{self.side}] {'OK' if ok else 'FAIL'} err={err_norm:.4f}\n"
+                f"  POS  dp_quest={r3(dp_quest)} dp_world={r3(dp_world)} "
+                f"target_pos={r3(target_pos)}\n"
+                f"  ROT  dr_quest:  {axang(dr_quest)}\n"
+                f"       dr_world:  {axang(dr_world)}\n"
+                f"       dr_base :  {axang(dr_base)}"
             )
             self._last_ik_ok_log = now
 
