@@ -49,6 +49,8 @@ from std_srvs.srv import Trigger, SetBool
 import pinocchio as pin
 from scipy.spatial.transform import Rotation as R
 
+from agx_arm_msgs.msg import MoveMITMsg
+
 
 ARM_JOINT_NAMES = [f"joint{i}" for i in range(1, 8)]
 N_ARM = 7
@@ -174,6 +176,23 @@ class QuestLeaderNode(Node):
         self.declare_parameter("debug_freeze_orientation", False)
         self.declare_parameter("debug_freeze_position", False)
 
+        # ----- Follow / MIT-mode impedance + gravity feed-forward -----
+        # Follow publishes MoveMITMsg with kp/kd above zero (so the arm
+        # tracks the IK target) and t_ff = G(q) · gravity_scale (so the
+        # impedance law works correctly under our tilted shoulder mount —
+        # firmware-default gravity assumes vertical mount, which is wrong
+        # for the Nero torso). Same gravity model as gravity_comp_node;
+        # tune via params if the arm sags or feels stiff.
+        self.declare_parameter("mit_kp", [10.0, 10.0, 10.0, 8.0, 6.0, 4.0, 2.0])
+        self.declare_parameter("mit_kd", [0.5, 0.5, 0.5, 0.3, 0.3, 0.2, 0.1])
+        self.declare_parameter("gravity_vector", [-9.81, 0.0, 0.0])
+        self.declare_parameter("gravity_scale", 1.5)
+        self.declare_parameter(
+            "friction_comp", [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, 0.05]
+        )
+        self.declare_parameter("torque_limit", 10.0)
+        self.declare_parameter("feedback_timeout", 0.1)
+
         self.side: str = self.get_parameter("side").value
         self.ee_link: str = self.get_parameter("ee_link").value
         urdf_path: str = self.get_parameter("urdf_path").value
@@ -189,6 +208,24 @@ class QuestLeaderNode(Node):
         self._debug_freeze_pos: bool = bool(
             self.get_parameter("debug_freeze_position").value
         )
+        self._mit_kp = list(self.get_parameter("mit_kp").value)
+        self._mit_kd = list(self.get_parameter("mit_kd").value)
+        self._gravity_scale = float(self.get_parameter("gravity_scale").value)
+        self._friction_comp = list(self.get_parameter("friction_comp").value)
+        self._torque_limit = float(self.get_parameter("torque_limit").value)
+        self._feedback_timeout = float(
+            self.get_parameter("feedback_timeout").value
+        )
+        gravity_vec = list(self.get_parameter("gravity_vector").value)
+        if len(self._mit_kp) != N_ARM or len(self._mit_kd) != N_ARM:
+            raise ValueError(
+                f"mit_kp and mit_kd must each have {N_ARM} entries"
+            )
+        if len(gravity_vec) != 3:
+            raise ValueError(
+                f"gravity_vector must be length 3, got {gravity_vec}"
+            )
+
         q2w_rpy = list(self.get_parameter("quest_to_world_rpy").value)
         if len(q2w_rpy) != 3:
             raise ValueError(
@@ -245,6 +282,20 @@ class QuestLeaderNode(Node):
             f"nq={self.model.nq} nv={self.model.nv} njoints={self.model.njoints}"
         )
 
+        # Gravity in the arm's base_link frame, used by the Follow path's
+        # gravity feed-forward (computeGeneralizedGravity below). Match
+        # gravity_comp_node — the URDF models the arm upright but it's
+        # actually side-mounted with a tilt, so default [-9.81, 0, 0]
+        # points down the arm's -X axis.
+        g = np.array(gravity_vec, dtype=float)
+        self.model.gravity = pin.Motion(
+            np.concatenate([g, [0.0, 0.0, 0.0]])
+        )
+        self.get_logger().info(
+            f"[{self.get_parameter('side').value}] gravity in base_link: "
+            f"[{g[0]:.3f}, {g[1]:.3f}, {g[2]:.3f}] m/s²"
+        )
+
         self._q_indices: List[int] = []
         self._v_indices: List[int] = []
         for name in ARM_JOINT_NAMES:
@@ -278,6 +329,7 @@ class QuestLeaderNode(Node):
         self._latest_ctrl: Optional[Pose6] = None
         self._latest_ctrl_ts: float = 0.0
         self._latest_joint_state: Optional[JointState] = None
+        self._latest_joint_state_ts: float = 0.0
 
         self._ctrl_ref: Optional[Pose6] = None
         self._ee_ref: Optional[Pose6] = None
@@ -319,7 +371,20 @@ class QuestLeaderNode(Node):
         self._ghost_pub = self.create_publisher(
             JointState, f"{ns}/quest_leader/target_joint_states", 10,
         )
-        self._cmd_pub = self.create_publisher(
+        # Follow path: MIT-mode impedance with gravity feed-forward.
+        # Routes through agx_arm_ctrl_single_node._move_mit_callback,
+        # which calls arm.move_mit(joint_index, p_des, v_des, kp, kd,
+        # t_ff) per joint. Non-zero kp/kd track the IK target; t_ff
+        # injects our tilt-aware gravity comp so the firmware-internal
+        # gravity model (which assumes vertical mount) doesn't fight us.
+        self._mit_pub = self.create_publisher(
+            MoveMITMsg, f"{ns}/control/move_mit", 10,
+        )
+        # Position-hold publisher — used to kick the firmware out of
+        # MIT mode and back into position-hold whenever Follow turns
+        # off. Without this, the arm sits in MIT with no commands and
+        # may slowly drift on its last p_des.
+        self._pos_hold_pub = self.create_publisher(
             JointState, f"{ns}/control/joint_states", 10,
         )
         self._status_pub = self.create_publisher(
@@ -367,6 +432,69 @@ class QuestLeaderNode(Node):
     def _js_cb(self, msg: JointState) -> None:
         with self._lock:
             self._latest_joint_state = msg
+            self._latest_joint_state_ts = time.time()
+
+    # ---------- feedback helpers ----------
+    def _current_arm_q(self) -> Optional[np.ndarray]:
+        """Read the latest /feedback/joint_states and extract the 7 arm
+        joints. Returns None if feedback is missing, stale, or any arm
+        joint is absent from the message — caller must skip commanding
+        rather than guess. Matches gravity_comp_node's safety pattern."""
+        with self._lock:
+            js = self._latest_joint_state
+            ts = self._latest_joint_state_ts
+        if js is None:
+            return None
+        if time.time() - ts > self._feedback_timeout:
+            return None
+        by_name = dict(zip(js.name, js.position))
+        q = np.zeros(N_ARM)
+        for i, name in enumerate(ARM_JOINT_NAMES):
+            if name not in by_name:
+                return None
+            q[i] = float(by_name[name])
+        return q
+
+    def _gravity_torque(self, arm_q: np.ndarray) -> List[float]:
+        """Per-joint gravity feed-forward (N·m) at arm config arm_q.
+
+        G(q) via Pinocchio (gravity already set on self.model in __init__),
+        scaled by gravity_scale, plus per-joint Coulomb-friction term in
+        the gravity-torque direction, clamped to ±torque_limit. Same
+        recipe as gravity_comp_node._control_tick — kept aligned so the
+        user's tuned gravity_scale / friction_comp transfer directly."""
+        q_full = self._q_full(arm_q)
+        pin.computeGeneralizedGravity(self.model, self.data, q_full)
+        tau_g = self.data.g
+        out: List[float] = []
+        for i in range(N_ARM):
+            t = float(tau_g[self._v_indices[i]]) * self._gravity_scale
+            if i < len(self._friction_comp) and t != 0.0:
+                t += float(np.sign(t)) * self._friction_comp[i]
+            t = max(-self._torque_limit, min(self._torque_limit, t))
+            out.append(t)
+        return out
+
+    def _reengage_position_hold(self) -> None:
+        """Send a JointState at the arm's current pose to switch firmware
+        out of MIT mode and back into position-hold. Called whenever
+        Follow transitions on→off; without it, the arm is left in MIT
+        with stale p_des and may drift."""
+        q_current = self._current_arm_q()
+        if q_current is None:
+            self.get_logger().warn(
+                f"[{self.side}] cannot re-engage position hold — "
+                f"no fresh joint feedback"
+            )
+            return
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = list(ARM_JOINT_NAMES)
+        msg.position = q_current.tolist()
+        self._pos_hold_pub.publish(msg)
+        self.get_logger().info(
+            f"[{self.side}] re-engaged position hold at current pose"
+        )
 
     # ---------- FK / IK (Pinocchio, in-process) ----------
     def _q_full(self, arm_q: np.ndarray) -> np.ndarray:
@@ -463,8 +591,11 @@ class QuestLeaderNode(Node):
         (a blocking sleep here would starve them on MultiThreadedExecutor).
         """
         self.get_logger().info(f"[{self.side}] calibration requested (sim-only)")
+        was_following = self._follow_on
         self._preview_on = False
         self._follow_on = False
+        if was_following:
+            self._reengage_position_hold()
 
         target_q = np.array(
             CALIBRATION_JOINT_POSE_LEFT if self.side == "left"
@@ -553,10 +684,13 @@ class QuestLeaderNode(Node):
             if self._state == STATE_READY:
                 self._state = STATE_ACTIVE
         else:
+            was_following = self._follow_on
             self._preview_on = False
             self._follow_on = False
             if self._state == STATE_ACTIVE:
                 self._state = STATE_READY
+            if was_following:
+                self._reengage_position_hold()
         response.success = True
         response.message = f"preview={'on' if self._preview_on else 'off'}"
         return response
@@ -566,7 +700,10 @@ class QuestLeaderNode(Node):
             response.success = False
             response.message = "enable preview first"
             return response
+        was_following = self._follow_on
         self._follow_on = bool(request.data)
+        if was_following and not self._follow_on:
+            self._reengage_position_hold()
         response.success = True
         response.message = f"follow={'on' if self._follow_on else 'off'}"
         return response
@@ -604,6 +741,7 @@ class QuestLeaderNode(Node):
                 f"[{self.side}] Quest stream stalled ({ctrl_age:.2f}s) — disarming Follow"
             )
             self._follow_on = False
+            self._reengage_position_hold()
             return
 
         self._prof_ctrl_age_ms.append(ctrl_age * 1000.0)
@@ -727,8 +865,33 @@ class QuestLeaderNode(Node):
         out.name = list(ARM_JOINT_NAMES)
         out.position = q_sol.tolist()
         self._ghost_pub.publish(out)
+
         if self._follow_on:
-            self._cmd_pub.publish(out)
+            # Gravity feed-forward is computed at the arm's CURRENT pose
+            # (from feedback), not at the IK target — gravity comp is
+            # "what torque counters gravity at where I am right now,"
+            # while the impedance kp/kd then pulls the arm toward q_sol.
+            # If feedback is missing/stale, skip this tick rather than
+            # send a MIT command without gravity comp on this tilted
+            # mount (would sag).
+            q_current = self._current_arm_q()
+            if q_current is None:
+                if now - self._last_ik_fail_log > 1.0:
+                    self.get_logger().warn(
+                        f"[{self.side}] follow: joint feedback "
+                        f"missing/stale — skipping MIT command"
+                    )
+                    self._last_ik_fail_log = now
+            else:
+                t_ff = self._gravity_torque(q_current)
+                mit = MoveMITMsg()
+                mit.joint_index = list(range(1, N_ARM + 1))
+                mit.p_des = q_sol.tolist()
+                mit.v_des = [0.0] * N_ARM
+                mit.kp = list(self._mit_kp)
+                mit.kd = list(self._mit_kd)
+                mit.torque = t_ff
+                self._mit_pub.publish(mit)
 
     def _publish_controller_viz(self) -> None:
         """Publish controller pose for the webapp marker.
