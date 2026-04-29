@@ -191,7 +191,21 @@ class QuestLeaderNode(Node):
             "friction_comp", [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, 0.05]
         )
         self.declare_parameter("torque_limit", 10.0)
-        self.declare_parameter("feedback_timeout", 0.1)
+        # Per-joint rate limit for the published p_des, in rad/tick.
+        # The IK runs at ~30 Hz target but the executor occasionally
+        # stalls the timer (joint-state subs at 200 Hz + GIL → tick
+        # gaps up to 150 ms). Without rate limiting, the next tick's
+        # p_des jumps to wherever the operator's hand has moved to,
+        # which the firmware tracks aggressively (kp=10) and produces
+        # visible "skip-ahead" jerk. Clamping |p_des − q_current| per
+        # joint spreads the catch-up across multiple ticks. At 30 Hz
+        # default 0.1 rad/tick = ~3 rad/s peak velocity — fast enough
+        # for teleop, smooth feel.
+        self.declare_parameter("mit_dq_max", 0.1)
+        # Joint-feedback timeout. 0.1 s is tight given executor jitter
+        # we've seen in the logs; bumped to 0.2 s so transient stalls
+        # don't make Follow drop a tick.
+        self.declare_parameter("feedback_timeout", 0.2)
 
         self.side: str = self.get_parameter("side").value
         self.ee_link: str = self.get_parameter("ee_link").value
@@ -213,6 +227,7 @@ class QuestLeaderNode(Node):
         self._gravity_scale = float(self.get_parameter("gravity_scale").value)
         self._friction_comp = list(self.get_parameter("friction_comp").value)
         self._torque_limit = float(self.get_parameter("torque_limit").value)
+        self._mit_dq_max = float(self.get_parameter("mit_dq_max").value)
         self._feedback_timeout = float(
             self.get_parameter("feedback_timeout").value
         )
@@ -476,10 +491,18 @@ class QuestLeaderNode(Node):
         return out
 
     def _reengage_position_hold(self) -> None:
-        """Send a JointState at the arm's current pose to switch firmware
-        out of MIT mode and back into position-hold. Called whenever
-        Follow transitions on→off; without it, the arm is left in MIT
-        with stale p_des and may drift."""
+        """Hand the arm cleanly back from MIT to position-hold mode.
+
+        Two-step transition. First, publish a "soft-zero" MoveMITMsg with
+        kp=0, kd=mit_kd, p_des=q_current, t_ff=G(q) — same gravity recipe
+        as gravity_comp_node, but with damping kd left in. This releases
+        the active position-tracking pull (kp=10 was clamping the arm
+        toward the last p_des) without dropping gravity comp, so the arm
+        sits stationary under its own weight. Then publish a JointState
+        at q_current to switch firmware mode out of MIT into position-
+        hold. Without the soft-zero prelude, the firmware was carrying
+        residual MIT impedance state into the move_j transition and the
+        wrist would visibly snap to the wrong pose on the next click."""
         q_current = self._current_arm_q()
         if q_current is None:
             self.get_logger().warn(
@@ -487,13 +510,28 @@ class QuestLeaderNode(Node):
                 f"no fresh joint feedback"
             )
             return
+        soft = MoveMITMsg()
+        soft.joint_index = list(range(1, N_ARM + 1))
+        soft.p_des = q_current.tolist()
+        soft.v_des = [0.0] * N_ARM
+        soft.kp = [0.0] * N_ARM
+        soft.kd = list(self._mit_kd)
+        soft.torque = self._gravity_torque(q_current)
+        self._mit_pub.publish(soft)
+        # Let the firmware fully apply the soft-zero MIT command before
+        # we yank it into position mode. 50 ms is one CAN frame budget
+        # plus headroom; safe to sleep here because this method is only
+        # called from service callbacks (ReentrantCallbackGroup), so the
+        # IK timer keeps firing on its own executor thread.
+        time.sleep(0.05)
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = list(ARM_JOINT_NAMES)
         msg.position = q_current.tolist()
         self._pos_hold_pub.publish(msg)
         self.get_logger().info(
-            f"[{self.side}] re-engaged position hold at current pose"
+            f"[{self.side}] re-engaged position hold at current pose "
+            f"(soft-zero MIT → move_j)"
         )
 
     # ---------- FK / IK (Pinocchio, in-process) ----------
@@ -883,10 +921,20 @@ class QuestLeaderNode(Node):
                     )
                     self._last_ik_fail_log = now
             else:
+                # Per-tick rate limit on p_des. Without this, when the
+                # executor stalls (200 Hz joint-state subs + GIL → tick
+                # gaps up to 370 ms) the next tick computes a p_des far
+                # from q_current; the firmware's kp=10 then yanks the arm
+                # there over a few ms and we see "skip-ahead" jerk.
+                # Clamping |p_des - q_current| spreads the catch-up
+                # across multiple ticks at a bounded peak velocity.
                 t_ff = self._gravity_torque(q_current)
+                dq = q_sol - q_current
+                dq = np.clip(dq, -self._mit_dq_max, self._mit_dq_max)
+                p_des = q_current + dq
                 mit = MoveMITMsg()
                 mit.joint_index = list(range(1, N_ARM + 1))
-                mit.p_des = q_sol.tolist()
+                mit.p_des = p_des.tolist()
                 mit.v_des = [0.0] * N_ARM
                 mit.kp = list(self._mit_kp)
                 mit.kd = list(self._mit_kd)
