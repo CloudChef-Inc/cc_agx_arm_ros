@@ -23,7 +23,10 @@ Delta math:
     dR = ctrl_ref_R^-1 · ctrl_R             (rotation delta in ctrl frame)
     target_R = ee_ref_R · dR                (apply in EE ref frame)
 
-Per-frame delta clamp: 5 cm, 15°.
+No delta clamp — the 7-DOF arm has human-scale workspace and the IK
+is iter-bounded, so out-of-reach targets self-throttle (IK returns
+not-ok and we hold the last good solution) without needing input
+limits.
 """
 from __future__ import annotations
 
@@ -74,15 +77,6 @@ DEBUG_CIRCLE_YAW_RAD = {
 
 COUNTDOWN_S = 5
 IK_RATE_HZ = 30.0
-# Cumulative clamp on (ctrl - ctrl_ref). The arm reach from base_link
-# is ~0.65 m and ee_ref already sits ~0.67 m out (calibration pose),
-# so a 0.50 m delta easily commands targets outside the workspace.
-# Unreachable targets make IK burn its full iteration budget every
-# frame (err plateaus at the residual-to-closest-reachable-point),
-# which throttles the 30 Hz tick to ~6 Hz. 0.30 m keeps the operator
-# inside the workspace cone in the directions that matter.
-MAX_DP = 0.30
-MAX_DR_DEG = 90.0
 STREAM_STALL_S = 0.5
 
 # Singularity-robust IK params.
@@ -139,19 +133,6 @@ class Pose6:
             pos=np.array([p.pose.position.x, p.pose.position.y, p.pose.position.z]),
             rot=R.from_quat([q.x, q.y, q.z, q.w]),
         )
-
-
-def _clamp_delta(dp: np.ndarray, dr: R) -> tuple[np.ndarray, R]:
-    n = float(np.linalg.norm(dp))
-    if n > MAX_DP:
-        dp = dp * (MAX_DP / n)
-    rv = dr.as_rotvec()
-    ang = float(np.linalg.norm(rv))
-    max_ang = math.radians(MAX_DR_DEG)
-    if ang > max_ang:
-        rv = rv * (max_ang / ang)
-        dr = R.from_rotvec(rv)
-    return dp, dr
 
 
 class QuestLeaderNode(Node):
@@ -628,7 +609,6 @@ class QuestLeaderNode(Node):
         dp_world = self._R_q2w.apply(dp_quest)
         # Conjugation: WebXR-frame rotation re-expressed in robot-world.
         dr_world = self._R_q2w * dr_quest * self._R_q2w_inv
-        dp_world, dr_world = _clamp_delta(dp_world, dr_world)
 
         if self._debug_freeze_pos:
             dp_world = np.zeros(3)
