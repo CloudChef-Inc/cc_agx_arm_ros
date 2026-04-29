@@ -40,7 +40,10 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import (
+    MutuallyExclusiveCallbackGroup,
+    ReentrantCallbackGroup,
+)
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
@@ -339,7 +342,29 @@ class QuestLeaderNode(Node):
 
         self._state = STATE_IDLE
         self._lock = threading.Lock()
+        # Callback-group layout. The default ReentrantCallbackGroup we
+        # had before let the 200 Hz joint-state callback preempt the
+        # IK timer on the same threads, and let the IK timer fire
+        # concurrently with itself when a tick ran long. Both showed
+        # up in the diagnostics as `tick_gap_ms` blowing past the
+        # 33 ms target up to ~660 ms, dropping `eff_hz` from 30 to
+        # 18-25 and producing the visible jitter.
+        #
+        #   _cb_group       — services + status/calibration timers.
+        #                     Reentrant: services may be called while
+        #                     another callback runs (rarely, but cheap
+        #                     to allow).
+        #   _cb_group_fb    — feedback subscriptions (joint_state,
+        #                     ctrl_pose). MutuallyExclusive so the
+        #                     fast joint-state stream gets its own
+        #                     thread and isn't blocked behind the IK.
+        #   _cb_group_ik    — IK timer. MutuallyExclusive so two IK
+        #                     ticks never run concurrently — keeps
+        #                     each tick deterministic and prevents
+        #                     interleaved publishes during a stall.
         self._cb_group = ReentrantCallbackGroup()
+        self._cb_group_fb = MutuallyExclusiveCallbackGroup()
+        self._cb_group_ik = MutuallyExclusiveCallbackGroup()
 
         self._latest_ctrl: Optional[Pose6] = None
         self._latest_ctrl_ts: float = 0.0
@@ -376,11 +401,11 @@ class QuestLeaderNode(Node):
         ns = f"/{self.side}"
         self.create_subscription(
             PoseStamped, f"/quest/{self.side}_controller",
-            self._ctrl_cb, 10, callback_group=self._cb_group,
+            self._ctrl_cb, 10, callback_group=self._cb_group_fb,
         )
         self.create_subscription(
             JointState, f"{ns}/feedback/joint_states",
-            self._js_cb, 10, callback_group=self._cb_group,
+            self._js_cb, 10, callback_group=self._cb_group_fb,
         )
 
         self._ghost_pub = self.create_publisher(
@@ -429,7 +454,7 @@ class QuestLeaderNode(Node):
             self._follow_srv, callback_group=self._cb_group,
         )
 
-        self.create_timer(1.0 / IK_RATE_HZ, self._ik_tick, callback_group=self._cb_group)
+        self.create_timer(1.0 / IK_RATE_HZ, self._ik_tick, callback_group=self._cb_group_ik)
         self.create_timer(0.2, self._publish_status, callback_group=self._cb_group)
         self.create_timer(0.2, self._calibration_tick, callback_group=self._cb_group)
 
@@ -493,16 +518,27 @@ class QuestLeaderNode(Node):
     def _reengage_position_hold(self) -> None:
         """Hand the arm cleanly back from MIT to position-hold mode.
 
-        Two-step transition. First, publish a "soft-zero" MoveMITMsg with
-        kp=0, kd=mit_kd, p_des=q_current, t_ff=G(q) — same gravity recipe
-        as gravity_comp_node, but with damping kd left in. This releases
-        the active position-tracking pull (kp=10 was clamping the arm
-        toward the last p_des) without dropping gravity comp, so the arm
-        sits stationary under its own weight. Then publish a JointState
-        at q_current to switch firmware mode out of MIT into position-
-        hold. Without the soft-zero prelude, the firmware was carrying
-        residual MIT impedance state into the move_j transition and the
-        wrist would visibly snap to the wrong pose on the next click."""
+        Empirical sequence — single soft-zero+move_j wasn't sufficient:
+        the wrist (low kp=2 in tracking) would visibly rotate on the
+        transition and even the next move_j (slider "Send to robot")
+        wouldn't fix it; only a SECOND move_j after a delay did. So we
+        bias toward over-publishing:
+
+          1. Publish soft-zero MIT (kp=0, kd intact, p_des=q_current,
+             t_ff=G(q)) for ~200 ms — 5 frames at 40 ms — to bleed off
+             the active impedance and let the firmware's MIT-mode
+             internal state quiesce.
+          2. Publish move_j at q_current to flip the firmware out of
+             MIT into position mode.
+          3. After 100 ms, publish move_j AGAIN (defensive). The first
+             move_j after MIT is the one we observed mis-tracking the
+             wrist; the second one consistently fixed it. Sending it
+             ourselves means the user doesn't have to click "Send"
+             twice.
+
+        Total ~300 ms. Safe to sleep here — this method is only called
+        from service callbacks (ReentrantCallbackGroup), so the IK
+        timer keeps firing on its own executor thread."""
         q_current = self._current_arm_q()
         if q_current is None:
             self.get_logger().warn(
@@ -512,26 +548,39 @@ class QuestLeaderNode(Node):
             return
         soft = MoveMITMsg()
         soft.joint_index = list(range(1, N_ARM + 1))
-        soft.p_des = q_current.tolist()
         soft.v_des = [0.0] * N_ARM
         soft.kp = [0.0] * N_ARM
         soft.kd = list(self._mit_kd)
-        soft.torque = self._gravity_torque(q_current)
-        self._mit_pub.publish(soft)
-        # Let the firmware fully apply the soft-zero MIT command before
-        # we yank it into position mode. 50 ms is one CAN frame budget
-        # plus headroom; safe to sleep here because this method is only
-        # called from service callbacks (ReentrantCallbackGroup), so the
-        # IK timer keeps firing on its own executor thread.
-        time.sleep(0.05)
+        for i in range(5):
+            q_now = self._current_arm_q()
+            if q_now is None:
+                q_now = q_current
+            soft.p_des = q_now.tolist()
+            soft.torque = self._gravity_torque(q_now)
+            self._mit_pub.publish(soft)
+            time.sleep(0.04)
+
+        q_final = self._current_arm_q()
+        if q_final is None:
+            q_final = q_current
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = list(ARM_JOINT_NAMES)
-        msg.position = q_current.tolist()
+        msg.position = q_final.tolist()
         self._pos_hold_pub.publish(msg)
+
+        time.sleep(0.1)
+        msg.header.stamp = self.get_clock().now().to_msg()
+        # Re-read q_current so the second move_j commands wherever the
+        # arm settled after the first one — not where it was 100 ms ago.
+        q_settle = self._current_arm_q()
+        if q_settle is not None:
+            msg.position = q_settle.tolist()
+        self._pos_hold_pub.publish(msg)
+
         self.get_logger().info(
-            f"[{self.side}] re-engaged position hold at current pose "
-            f"(soft-zero MIT → move_j)"
+            f"[{self.side}] re-engaged position hold "
+            f"(5x soft-zero MIT → 2x move_j)"
         )
 
     # ---------- FK / IK (Pinocchio, in-process) ----------
@@ -988,7 +1037,10 @@ def main(args=None) -> None:
     rclpy.init(args=args)
     from rclpy.executors import MultiThreadedExecutor
     node = QuestLeaderNode()
-    exec_ = MultiThreadedExecutor(num_threads=3)
+    # 4 threads: one each for the IK timer, the feedback-sub group, the
+    # services/status group, and one floating for service-callback
+    # blocking sleeps inside _reengage_position_hold.
+    exec_ = MultiThreadedExecutor(num_threads=4)
     exec_.add_node(node)
     try:
         exec_.spin()

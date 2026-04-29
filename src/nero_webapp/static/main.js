@@ -52,6 +52,14 @@ const ghostRobots = { left: null, right: null };
 // the instant CALIBRATING begins, not on every subsequent frame).
 const prevQuestStatus = { left: "", right: "" };
 
+// Timestamp (ms) of the most recent local Follow click per side. Used
+// to suppress the WS-driven button-state auto-reflect for a short
+// window after a click — otherwise a stale 5 Hz status broadcast that
+// was queued before the server processed the toggle can land just
+// after the click and clobber the optimistic UI state.
+const lastFollowClickTs = { left: 0, right: 0 };
+const FOLLOW_CLICK_COOLDOWN_MS = 800;
+
 // Quest controller marker. Drawn in ROBOT WORLD frame (scene root)
 // at (anchor + dp_world), where:
 //   anchor   = ghost's gripper_flange world position at calibration
@@ -562,11 +570,18 @@ function buildSliders() {
     if (qFollow) {
       qFollow.onclick = async () => {
         const enabling = !qFollow.classList.contains("active");
+        // Optimistic update so the UI is responsive. WS auto-reflect
+        // (further down in the message handler) is gated on a cooldown
+        // so a stale 5 Hz status broadcast can't clobber this state
+        // before the server's next status frame catches up.
+        lastFollowClickTs[side] = Date.now();
+        qFollow.classList.toggle("active", enabling);
+        qFollow.textContent = enabling ? "Follow ON" : "Follow";
         const d = await postQuest("/quest_leader/follow", { side, enabled: enabling });
-        if (d.ok) {
-          qFollow.classList.toggle("active", enabling);
-          qFollow.textContent = enabling ? "Follow ON" : "Follow";
-        } else {
+        if (!d.ok) {
+          // Roll back optimistic update.
+          qFollow.classList.toggle("active", !enabling);
+          qFollow.textContent = !enabling ? "Follow ON" : "Follow";
           alert("Follow failed: " + (d.message || d.error || "?"));
         }
       };
@@ -730,10 +745,17 @@ function connect() {
           const fl = document.querySelector(`.btn-quest-follow[data-side="${side}"]`);
           if (pv) pv.disabled = !ready;
           if (fl) fl.disabled = !(pv && pv.classList.contains("active"));
-          // Auto-reflect server-side auto-disarm of Follow.
-          if (fl && fl.classList.contains("active") && !state.includes("follow=True")) {
-            fl.classList.remove("active");
-            fl.textContent = "Follow";
+          // Auto-reflect server state into the Follow button — but only
+          // after the click cooldown, so a stale broadcast that was
+          // queued before the server processed our toggle can't undo
+          // the optimistic update.
+          const sinceClick = Date.now() - lastFollowClickTs[side];
+          if (fl && sinceClick > FOLLOW_CLICK_COOLDOWN_MS) {
+            const isFollowing = state.includes("follow=True");
+            if (fl.classList.contains("active") !== isFollowing) {
+              fl.classList.toggle("active", isFollowing);
+              fl.textContent = isFollowing ? "Follow ON" : "Follow";
+            }
           }
         }
       }
