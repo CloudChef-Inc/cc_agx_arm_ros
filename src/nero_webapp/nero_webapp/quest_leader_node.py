@@ -74,10 +74,14 @@ DEBUG_CIRCLE_YAW_RAD = {
 
 COUNTDOWN_S = 5
 IK_RATE_HZ = 30.0
-# Cumulative clamp on (ctrl - ctrl_ref). 0.05 m was far too tight —
-# it kept the target pinned within 5 cm of the calibration EE even
-# for intentional 20–30 cm moves. Workspace-reasonable bound.
-MAX_DP = 0.50
+# Cumulative clamp on (ctrl - ctrl_ref). The arm reach from base_link
+# is ~0.65 m and ee_ref already sits ~0.67 m out (calibration pose),
+# so a 0.50 m delta easily commands targets outside the workspace.
+# Unreachable targets make IK burn its full iteration budget every
+# frame (err plateaus at the residual-to-closest-reachable-point),
+# which throttles the 30 Hz tick to ~6 Hz. 0.30 m keeps the operator
+# inside the workspace cone in the directions that matter.
+MAX_DP = 0.30
 MAX_DR_DEG = 90.0
 STREAM_STALL_S = 0.5
 
@@ -93,7 +97,17 @@ STREAM_STALL_S = 0.5
 #   damping smoothly rises to IK_DAMPING_MAX, trading exact tracking
 #   in the rank-deficient direction (where motion is impossible anyway)
 #   for numerical stability.
-IK_MAX_ITERS = 50
+#
+# IK_MAX_ITERS:
+#   Tracking-IK budget. We do NOT need full Newton convergence in one
+#   tick — at 30 Hz the controller delta between ticks is small, so a
+#   handful of damped Newton steps is enough; the next tick continues
+#   from the previous solution. 50 iters was ~400 ms in worst case
+#   (unreachable target, no convergence possible) which throttled the
+#   tick to 6 Hz and made teleop lag visibly. 12 caps worst-case at
+#   ~50 ms so eff_hz stays close to IK_RATE_HZ even when the operator
+#   commands an unreachable pose.
+IK_MAX_ITERS = 12
 IK_EPS = 5e-3                # ≈ 5 mm / 0.3°: tracking-grade convergence
 IK_DAMPING_MIN = 1e-4        # well-conditioned damping
 IK_DAMPING_MAX = 1e-1        # damping at the singularity
@@ -401,7 +415,12 @@ class QuestLeaderNode(Node):
         err_norm = float("inf")
         for it in range(IK_MAX_ITERS):
             q_full = self._q_full(q_arm)
-            pin.forwardKinematics(self.model, self.data, q_full)
+            # Single FK pass per iteration. computeJointJacobians runs FK
+            # internally and caches the joint Jacobians; getFrameJacobian
+            # below pulls the EE Jacobian from that cache without redoing
+            # FK. Replaces the old forwardKinematics + computeFrameJacobian
+            # pattern, which did FK twice.
+            pin.computeJointJacobians(self.model, self.data, q_full)
             pin.updateFramePlacement(self.model, self.data, self._ee_fid)
             oMf = self.data.oMf[self._ee_fid]
             err = pin.log(oMf.actInv(target_se3)).vector  # 6-vector in EE frame
@@ -409,8 +428,8 @@ class QuestLeaderNode(Node):
             if err_norm < IK_EPS:
                 return q_arm, True, err_norm, it + 1
 
-            J_full = pin.computeFrameJacobian(
-                self.model, self.data, q_full, self._ee_fid, pin.LOCAL
+            J_full = pin.getFrameJacobian(
+                self.model, self.data, self._ee_fid, pin.LOCAL
             )
             J = J_full[:, self._v_indices]  # (6, N_ARM)
 
