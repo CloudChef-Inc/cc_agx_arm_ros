@@ -52,39 +52,18 @@ const ghostRobots = { left: null, right: null };
 // the instant CALIBRATING begins, not on every subsequent frame).
 const prevQuestStatus = { left: "", right: "" };
 
-// Debug-trajectory visualisation. Circles are drawn in ROBOT WORLD
-// frame (scene root) — +X right, +Y front, +Z up per the axes helper
-// on the torso — so both arms' targets are symmetric in the space the
-// operator reasons about, not in each arm's ±110°-rolled base_link.
-// Per-side offset from the calibration EE position (metres, world):
-//   both:    -0.20 Y  (20 cm toward the back)
-//   both:    -0.15 Z  (15 cm down)
-//   left arm:  -0.05 X  (5 cm further outward / away from centreline)
-//   right arm: +0.05 X  (5 cm further outward / away from centreline)
-// Each ring is also yawed ±30° about world Z so its plane faces
-// inward — left ring rotates with its +X side sweeping toward +Y,
-// right ring mirrors. Keeps the debug trajectories symmetric and
-// keeps the marker's motion component along world X, which exercises
-// the out-of-base_link rotation we care about for real teleop.
-const DEBUG_CIRCLE_RADIUS   = 0.03;
-// Default period (s/rev); /torso_config overrides it at boot.
-let   DEBUG_CIRCLE_PERIOD_S = 2.0;
-const DEBUG_CIRCLE_RAMP_S   = 2.0;
-const DEBUG_CIRCLE_OFFSET = {
-  left:  new THREE.Vector3(-0.05, -0.20, -0.15),
-  right: new THREE.Vector3(+0.05, -0.20, -0.15),
-};
-// Yaw of the circle's plane about world Z, radians. Positive = CCW
-// looking from +Z down. Signs chosen so each ring faces inward:
-//   left  arm at -X: yaw -30° → plane normal gains +X component
-//   right arm at +X: yaw +30° → plane normal gains -X component
-const DEBUG_CIRCLE_YAW_RAD = {
-  left:  -Math.PI / 6,
-  right: +Math.PI / 6,
-};
-const debugCircles = { left: null, right: null }; // THREE.Group per side
-const debugMarkers = { left: null, right: null }; // the moving sphere
-const debugMotionStart = { left: null, right: null }; // seconds since epoch
+// Quest controller marker. Drawn in ROBOT WORLD frame (scene root)
+// at (anchor + dp_world), where:
+//   anchor   = ghost's gripper_flange world position at calibration
+//              (snapshotted once on every CALIBRATING entry)
+//   dp_world = controller offset since calibration, published by
+//              quest_leader_node on /<side>/quest_leader/controller_viz
+// Orientation is the controller rotation since calibration (also
+// world-frame). At calibration the marker sits at the ghost's flange
+// with identity orientation; as the operator moves their hand it
+// tracks the input the IK is consuming.
+const controllerMarkers = { left: null, right: null }; // THREE.Group per side
+const controllerAnchors = { left: null, right: null }; // THREE.Vector3 per side
 
 // ------------ three.js scene --------------------------------------------
 // Switch the world to Z-up before creating any object whose orientation
@@ -255,12 +234,22 @@ function makeGhost(robot) {
   return robot;
 }
 
-function buildDebugCircle(side) {
+// Per-side colour for the controller marker. Distinct from the amber
+// ghost so all three (real arm, target ghost, controller input) read
+// at a glance.
+const CONTROLLER_COLOR = {
+  left:  0x00ffaa, // greenish-cyan
+  right: 0xff00aa, // magenta-pink
+};
+
+function buildControllerMarker(side) {
   // Called once calibration has driven the ghost to the calibration
-  // pose. Reads the ghost's gripper_flange WORLD position and places
-  // the ring at (ee_world + per-side offset), in the robot-world
-  // frame (the scene itself). Keeps both arms' circles symmetric in
-  // the operator's frame regardless of each arm's mount rotation.
+  // pose. Snapshots the ghost's gripper_flange WORLD position as the
+  // marker anchor, then builds a small group containing a coloured
+  // sphere, an AxesHelper showing orientation, and a dashed tether
+  // line back to the anchor (so the operator can see how far their
+  // hand has drifted from the calibration point). All in the
+  // robot-world frame (the scene root).
   const ghost = ghostRobots[side];
   if (!ghost) return;
   const flange = ghost.links && ghost.links["gripper_flange"];
@@ -269,108 +258,94 @@ function buildDebugCircle(side) {
   ghost.updateMatrixWorld(true);
   const eeWorld = new THREE.Vector3();
   flange.getWorldPosition(eeWorld);
+  controllerAnchors[side] = eeWorld.clone();
 
-  const off = DEBUG_CIRCLE_OFFSET[side];
-  const centreWorld = eeWorld.clone().add(off);
-
-  // Tear down any previous circle on this side.
-  if (debugCircles[side]) {
-    scene.remove(debugCircles[side]);
-    debugCircles[side] = null;
-    debugMarkers[side] = null;
+  // Tear down any previous marker on this side.
+  if (controllerMarkers[side]) {
+    scene.remove(controllerMarkers[side]);
+    controllerMarkers[side] = null;
   }
 
   const group = new THREE.Group();
-  group.position.copy(centreWorld); // group origin = circle centre (world)
-  // No rotation: group is axis-aligned with the world frame.
+  group.position.copy(eeWorld);
 
-  // Torus lies in XY by default (normal = +Z). We want the ring in
-  // the XZ plane (Rx(π/2), normal → world -Y), then yawed by α about
-  // world Z. Using Euler order 'ZYX' the applied matrix is
-  //   Rz(α) · Ry(0) · Rx(π/2),
-  // which is exactly what we need.
-  const yaw = DEBUG_CIRCLE_YAW_RAD[side];
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(DEBUG_CIRCLE_RADIUS, 0.0015, 8, 96),
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.012, 16, 16),
     new THREE.MeshBasicMaterial({
-      color: 0x00e0ff, transparent: true, opacity: 0.9, depthWrite: false,
+      color: CONTROLLER_COLOR[side], depthWrite: false,
     }),
   );
-  ring.rotation.set(Math.PI / 2, 0, yaw, "ZYX");
-  ring.renderOrder = 600;
-  group.add(ring);
+  ball.renderOrder = 700;
+  group.add(ball);
 
-  const centre = new THREE.Mesh(
+  // AxesHelper draws +X red, +Y green, +Z blue along the group's local
+  // axes, so the marker's orientation is visible directly.
+  const axes = new THREE.AxesHelper(0.10);
+  axes.renderOrder = 700;
+  group.add(axes);
+
+  // Anchor pip at the calibration centre — fixed in world, so it sits
+  // in the marker's local frame at -dp (updated each tick).
+  const anchorPip = new THREE.Mesh(
     new THREE.SphereGeometry(0.005, 10, 10),
-    new THREE.MeshBasicMaterial({ color: 0x00e0ff, depthWrite: false }),
+    new THREE.MeshBasicMaterial({
+      color: CONTROLLER_COLOR[side], transparent: true,
+      opacity: 0.5, depthWrite: false,
+    }),
   );
-  centre.renderOrder = 600;
-  group.add(centre);
+  anchorPip.renderOrder = 700;
+  group.add(anchorPip);
 
-  // EE in group-local coords = ee_world - centre_world = -offset.
-  const eeLocal = off.clone().negate();
-  const lineGeom = new THREE.BufferGeometry().setFromPoints([
-    eeLocal, new THREE.Vector3(0, 0, 0),
+  // Tether line from marker centre to the anchor pip.
+  const tetherGeom = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, 0, 0),
   ]);
-  const line = new THREE.Line(
-    lineGeom,
+  const tether = new THREE.Line(
+    tetherGeom,
     new THREE.LineDashedMaterial({
-      color: 0x00e0ff, dashSize: 0.01, gapSize: 0.006,
+      color: CONTROLLER_COLOR[side], dashSize: 0.01, gapSize: 0.006,
       transparent: true, opacity: 0.6, depthWrite: false,
     }),
   );
-  line.computeLineDistances();
-  line.renderOrder = 600;
-  group.add(line);
+  tether.computeLineDistances();
+  tether.renderOrder = 700;
+  group.add(tether);
 
-  const marker = new THREE.Mesh(
-    new THREE.SphereGeometry(0.012, 12, 12),
-    new THREE.MeshBasicMaterial({ color: 0xff3b3b, depthWrite: false }),
-  );
-  marker.renderOrder = 601;
-  marker.position.copy(eeLocal); // rest at EE
-  group.add(marker);
-  debugMarkers[side] = marker;
+  group.userData.tether = tether;
+  group.userData.anchorPip = anchorPip;
 
   scene.add(group);
-  debugCircles[side] = group;
+  controllerMarkers[side] = group;
 }
 
-function updateDebugMarkers() {
-  // Smoothstep ramp 0→1 over RAMP_S, then a circle of RADIUS in the
-  // world XZ plane around the centre (ee_world + per-side offset).
-  // During the ramp the marker interpolates from ee_world toward the
-  // circle, so there's no jump. Phase starts the instant the side's
-  // Preview toggle goes True.
-  const now = performance.now() / 1000.0;
-  for (const side of ["left", "right"]) {
-    const marker = debugMarkers[side];
-    if (!marker) continue;
-    const off = DEBUG_CIRCLE_OFFSET[side];
-    const eeLocal = off.clone().negate(); // EE in group coords
-    const start = debugMotionStart[side];
-    if (start === null) {
-      marker.position.copy(eeLocal);
-      marker.visible = true;
-      continue;
-    }
-    const t = now - start;
-    let s = Math.max(0, Math.min(1, t / DEBUG_CIRCLE_RAMP_S));
-    s = s * s * (3.0 - 2.0 * s); // smoothstep
-    const radius = DEBUG_CIRCLE_RADIUS * s;
-    const theta = 2.0 * Math.PI * Math.max(0, t - DEBUG_CIRCLE_RAMP_S) / DEBUG_CIRCLE_PERIOD_S;
-    // Circle's local X-axis is Rz(yaw)·(1,0,0) = (cos α, sin α, 0);
-    // local Z-axis unchanged (rotating about Z fixes Z). So a point
-    // at angle θ in the yawed plane:
-    //   (r cos θ) · (cos α, sin α, 0) + (r sin θ) · (0, 0, 1).
-    const yaw = DEBUG_CIRCLE_YAW_RAD[side];
-    const ca = Math.cos(yaw), sa = Math.sin(yaw);
-    marker.position.set(
-      eeLocal.x * (1 - s) + radius * ca * Math.cos(theta),
-      eeLocal.y * (1 - s) + radius * sa * Math.cos(theta),
-      eeLocal.z * (1 - s) + radius * Math.sin(theta),
-    );
-    marker.visible = true;
+function updateControllerMarker(side, ctrl) {
+  const marker = controllerMarkers[side];
+  const anchor = controllerAnchors[side];
+  if (!marker || !anchor || !ctrl) return;
+
+  // Position = anchor + dp_world (publisher already maps Quest → world).
+  marker.position.set(
+    anchor.x + ctrl.px,
+    anchor.y + ctrl.py,
+    anchor.z + ctrl.pz,
+  );
+  // Orientation = dr_world. Set the marker's world quaternion to it
+  // directly; AxesHelper will rotate with the group.
+  marker.quaternion.set(ctrl.qx, ctrl.qy, ctrl.qz, ctrl.qw);
+
+  // Tether endpoint in marker-local: inv(R_marker) · (anchor - pos).
+  const tether = marker.userData.tether;
+  const anchorPip = marker.userData.anchorPip;
+  if (tether) {
+    const anchorLocal = anchor.clone().sub(marker.position)
+      .applyQuaternion(marker.quaternion.clone().invert());
+    const positions = tether.geometry.attributes.position;
+    positions.setXYZ(0, 0, 0, 0);
+    positions.setXYZ(1, anchorLocal.x, anchorLocal.y, anchorLocal.z);
+    positions.needsUpdate = true;
+    tether.computeLineDistances();
+    if (anchorPip) anchorPip.position.copy(anchorLocal);
   }
 }
 
@@ -484,7 +459,6 @@ function animate() {
   requestAnimationFrame(animate);
   resizeViewport();
   controls.update();
-  updateDebugMarkers();
   renderer.render(scene, camera);
 }
 
@@ -701,6 +675,9 @@ function connect() {
         if (s && s.quest_ghost && s.quest_ghost.names && s.quest_ghost.positions) {
           applyGhostPose(side, s.quest_ghost.names, s.quest_ghost.positions);
         }
+        if (s && s.quest_controller) {
+          updateControllerMarker(side, s.quest_controller);
+        }
         if (s && s.quest_status !== undefined) {
           const statusEl = document.querySelector(`.quest-status[data-side="${side}"]`);
           const state = (s.quest_status || "").toString();
@@ -729,20 +706,9 @@ function connect() {
             if (followBtn && followBtn.classList.contains("active")) {
               sendCommand(side);
             }
-            // Ghost joints were just updated — rebuild the debug
-            // circle at the (new) calibration EE position.
-            buildDebugCircle(side);
-            debugMotionStart[side] = null; // reset phase
-          }
-          // Track preview on/off transitions so the marker animates
-          // from phase 0 each time preview comes back on — matches
-          // the per-side motion_start in quest_teleop_node.
-          const prevPreviewOn = prev.includes("preview=True");
-          const previewOn = state.includes("preview=True");
-          if (previewOn && !prevPreviewOn) {
-            debugMotionStart[side] = performance.now() / 1000.0;
-          } else if (!previewOn && prevPreviewOn) {
-            debugMotionStart[side] = null;
+            // Ghost joints were just updated — anchor the controller
+            // marker at the new calibration EE position.
+            buildControllerMarker(side);
           }
           prevQuestStatus[side] = state;
           if (statusEl) {
@@ -986,9 +952,6 @@ async function boot() {
     SHOULDER_X = TORSO_X / 2.0;
     if (typeof tc.shoulder_tilt_deg === "number") {
       SHOULDER_TILT = tc.shoulder_tilt_deg * Math.PI / 180.0;
-    }
-    if (typeof tc.debug_circle_period_s === "number") {
-      DEBUG_CIRCLE_PERIOD_S = tc.debug_circle_period_s;
     }
     // Update the torso box + shoulder mounts that were created with
     // the initial (possibly stale) defaults.

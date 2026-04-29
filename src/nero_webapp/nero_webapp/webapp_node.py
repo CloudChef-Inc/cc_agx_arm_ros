@@ -45,6 +45,7 @@ except Exception:  # noqa: BLE001
     PikaGripper = None  # type: ignore
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from geometry_msgs.msg import PoseStamped
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -117,9 +118,6 @@ class WebappNode(Node):
         self.declare_parameter("torso_depth",       0.10)
         self.declare_parameter("torso_height",      0.60)
         self.declare_parameter("shoulder_tilt_deg", 20.0)
-        # Seconds per revolution of the debug controller circle (viz).
-        # Matches the quest_teleop_node param of the same name.
-        self.declare_parameter("debug_circle_period_s", 2.0)
 
         self.joint_names: List[str] = (
             self.get_parameter("joint_names").get_parameter_value().string_array_value
@@ -159,6 +157,11 @@ class WebappNode(Node):
         # Quest leader ghost + status (for UI preview rendering).
         self._quest_ghost: Dict[str, Dict] = {"left": {}, "right": {}}
         self._quest_status: Dict[str, str] = {"left": "IDLE", "right": "IDLE"}
+        # Controller pose relative to calibration anchor (robot-world
+        # frame). Populated by /<side>/quest_leader/controller_viz once
+        # the side is calibrated; UI marker uses it to track the
+        # operator's hand.
+        self._quest_controller: Dict[str, Dict | None] = {"left": None, "right": None}
         for _side, _ns in (("left", left_ns), ("right", right_ns)):
             self.create_subscription(
                 JointState, f"/{_ns}/quest_leader/target_joint_states",
@@ -169,6 +172,11 @@ class WebappNode(Node):
             self.create_subscription(
                 _String, f"/{_ns}/quest_leader/status",
                 lambda msg, s=_side: self._on_quest_status(s, msg), qos,
+            )
+        for _side, _ns in (("left", left_ns), ("right", right_ns)):
+            self.create_subscription(
+                PoseStamped, f"/{_ns}/quest_leader/controller_viz",
+                lambda msg, s=_side: self._on_quest_controller(s, msg), qos,
             )
 
         # ---- Pika grippers (USB-serial, per side, optional) ----------------
@@ -358,12 +366,26 @@ class WebappNode(Node):
         with self._latest_lock:
             self._quest_status[side] = str(msg.data)
 
+    def _on_quest_controller(self, side: str, msg: PoseStamped) -> None:
+        with self._latest_lock:
+            self._quest_controller[side] = {
+                "px": float(msg.pose.position.x),
+                "py": float(msg.pose.position.y),
+                "pz": float(msg.pose.position.z),
+                "qx": float(msg.pose.orientation.x),
+                "qy": float(msg.pose.orientation.y),
+                "qz": float(msg.pose.orientation.z),
+                "qw": float(msg.pose.orientation.w),
+            }
+
     def snapshot(self) -> Dict[str, Dict]:
         with self._latest_lock:
             snap = {k: dict(v) for k, v in self._latest.items()}
             for side in ("left", "right"):
                 snap[side]["quest_ghost"] = dict(self._quest_ghost.get(side) or {})
                 snap[side]["quest_status"] = self._quest_status.get(side, "IDLE")
+                ctrl = self._quest_controller.get(side)
+                snap[side]["quest_controller"] = dict(ctrl) if ctrl else None
         # Overlay live Pika gripper width onto each side if connected.
         for side in ("left", "right"):
             g = self._pika.get(side)
@@ -519,7 +541,6 @@ def build_app(node: WebappNode, static_dir: Path) -> FastAPI:
             "torso_depth":       node.get_parameter("torso_depth").get_parameter_value().double_value,
             "torso_height":      node.get_parameter("torso_height").get_parameter_value().double_value,
             "shoulder_tilt_deg": node.get_parameter("shoulder_tilt_deg").get_parameter_value().double_value,
-            "debug_circle_period_s": node.get_parameter("debug_circle_period_s").get_parameter_value().double_value,
         }
 
     # ---- gravity comp toggle (calls the gravity_comp node's param) ----

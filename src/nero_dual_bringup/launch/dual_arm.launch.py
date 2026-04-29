@@ -198,9 +198,9 @@ def generate_launch_description() -> LaunchDescription:
     )
     debug_circle_period_arg = DeclareLaunchArgument(
         "debug_circle_period_s", default_value="2.0",
-        description="Seconds per revolution for the debug controller circle. "
-                    "Consumed by quest_teleop_node (trajectory) and webapp_node "
-                    "(viz via /torso_config).",
+        description="Seconds per revolution for the debug-mode fabricated "
+                    "controller trajectory. Only consumed by quest_teleop_node "
+                    "when quest_debug:=true.",
     )
 
     # Composed two-arm URDF via xacro — pass torso dims as args.
@@ -275,9 +275,6 @@ def generate_launch_description() -> LaunchDescription:
             "torso_depth":       LaunchConfiguration("torso_depth"),
             "torso_height":      LaunchConfiguration("torso_height"),
             "shoulder_tilt_deg": LaunchConfiguration("shoulder_tilt_deg"),
-            "debug_circle_period_s": ParameterValue(
-                LaunchConfiguration("debug_circle_period_s"), value_type=float
-            ),
         }],
     )
 

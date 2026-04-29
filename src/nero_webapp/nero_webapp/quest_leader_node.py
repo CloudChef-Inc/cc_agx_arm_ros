@@ -325,6 +325,16 @@ class QuestLeaderNode(Node):
         self._status_pub = self.create_publisher(
             String, f"{ns}/quest_leader/status", 10,
         )
+        # Controller pose for the webapp marker. Position = dp_world
+        # (controller offset from calibration anchor, in robot-world);
+        # orientation = dr_world (controller rotation since calibration,
+        # also in robot-world). The browser anchors the marker at the
+        # ghost's gripper_flange world position captured at calibration,
+        # so this is "where the controller has moved to" relative to
+        # the operator's starting hand pose.
+        self._ctrl_viz_pub = self.create_publisher(
+            PoseStamped, f"{ns}/quest_leader/controller_viz", 10,
+        )
 
         self.create_service(
             Trigger, f"{ns}/quest_leader/calibrate",
@@ -572,6 +582,11 @@ class QuestLeaderNode(Node):
                 self._prof_tick_gaps_ms = self._prof_tick_gaps_ms[-60:]
         self._prof_last_tick_t = tick_start
 
+        # Publish controller viz whenever we have a calibration anchor —
+        # independent of preview/follow, so the operator sees the marker
+        # at READY too (before they enable Preview).
+        self._publish_controller_viz()
+
         if not self._preview_on or self._state != STATE_ACTIVE:
             return
         if self._ctrl_ref is None or self._ee_ref is None:
@@ -714,6 +729,41 @@ class QuestLeaderNode(Node):
         self._ghost_pub.publish(out)
         if self._follow_on:
             self._cmd_pub.publish(out)
+
+    def _publish_controller_viz(self) -> None:
+        """Publish controller pose for the webapp marker.
+
+        Position = dp_world (controller offset from calibration anchor,
+        in robot-world frame). Orientation = dr_world (controller
+        rotation since calibration, in robot-world frame). The browser
+        anchors the marker at the ghost's gripper_flange world position
+        captured at calibration, so the marker visually says "this is
+        where your hand is, relative to where it started."
+        """
+        if self._ctrl_ref is None:
+            return
+        with self._lock:
+            ctrl = self._latest_ctrl
+        if ctrl is None:
+            return
+
+        dp_quest = ctrl.pos - self._ctrl_ref.pos
+        dr_quest = ctrl.rot * self._ctrl_ref.rot.inv()
+        dp_world = self._R_q2w.apply(dp_quest)
+        dr_world = self._R_q2w * dr_quest * self._R_q2w_inv
+        q = dr_world.as_quat()  # (x, y, z, w)
+
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "robot_world"
+        msg.pose.position.x = float(dp_world[0])
+        msg.pose.position.y = float(dp_world[1])
+        msg.pose.position.z = float(dp_world[2])
+        msg.pose.orientation.x = float(q[0])
+        msg.pose.orientation.y = float(q[1])
+        msg.pose.orientation.z = float(q[2])
+        msg.pose.orientation.w = float(q[3])
+        self._ctrl_viz_pub.publish(msg)
 
     def _publish_status(self) -> None:
         parts = [f"state={self._state}", f"preview={self._preview_on}",
