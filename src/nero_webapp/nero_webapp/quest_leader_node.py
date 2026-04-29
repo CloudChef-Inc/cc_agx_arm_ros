@@ -290,6 +290,20 @@ class QuestLeaderNode(Node):
         self._last_ik_fail_log = 0.0
         self._last_ik_ok_log = 0.0
 
+        # Rolling profiling buffers — last ~2 s at 30 Hz. Surfaced on the
+        # 1 Hz diagnostic log so we can tell where teleop lag comes from:
+        #   ik_ms        : IK solve duration. > 33 ms ⇒ IK is the bottleneck.
+        #   iters        : actual loop count (≤ IK_MAX_ITERS). High = near singular.
+        #   tick_gap_ms  : wall time between successive _ik_tick fires.
+        #                  > 33 ms ⇒ executor not keeping up with IK_RATE_HZ.
+        #   ctrl_age_ms  : age of latest /quest/<side>_controller msg at tick.
+        #                  High ⇒ Quest/network upstream is slow, not us.
+        self._prof_ik_ms: List[float] = []
+        self._prof_iters: List[int] = []
+        self._prof_tick_gaps_ms: List[float] = []
+        self._prof_ctrl_age_ms: List[float] = []
+        self._prof_last_tick_t: float = 0.0
+
         self._preview_on = False
         self._follow_on = False
         self._countdown_remaining = 0
@@ -371,18 +385,21 @@ class QuestLeaderNode(Node):
         target_pos: np.ndarray,
         target_rot: R,
         q_seed: np.ndarray,
-    ) -> tuple[np.ndarray, bool, float]:
-        """Singularity-robust IK (SR-DLS). Returns (arm_q, success, err_norm).
+    ) -> tuple[np.ndarray, bool, float, int]:
+        """Singularity-robust IK (SR-DLS). Returns (arm_q, success, err_norm, iters).
 
         success is True when err_norm < IK_EPS (fully converged) OR
         err_norm < IK_TRACK_TOL with a finished iteration budget — the
         latter so frames near a singularity still produce a usable
         tracking solution rather than dropping out.
+
+        iters is the actual number of iterations executed (1..IK_MAX_ITERS),
+        used by the profiling log to flag near-singular ticks.
         """
         q_arm = np.array(q_seed, dtype=float).copy()
         target_se3 = pin.SE3(target_rot.as_matrix(), target_pos)
         err_norm = float("inf")
-        for _ in range(IK_MAX_ITERS):
+        for it in range(IK_MAX_ITERS):
             q_full = self._q_full(q_arm)
             pin.forwardKinematics(self.model, self.data, q_full)
             pin.updateFramePlacement(self.model, self.data, self._ee_fid)
@@ -390,7 +407,7 @@ class QuestLeaderNode(Node):
             err = pin.log(oMf.actInv(target_se3)).vector  # 6-vector in EE frame
             err_norm = float(np.linalg.norm(err))
             if err_norm < IK_EPS:
-                return q_arm, True, err_norm
+                return q_arm, True, err_norm, it + 1
 
             J_full = pin.computeFrameJacobian(
                 self.model, self.data, q_full, self._ee_fid, pin.LOCAL
@@ -425,7 +442,7 @@ class QuestLeaderNode(Node):
         # Out of iterations. Accept the iterate as a tracking solution
         # if it's close enough — otherwise the ghost would freeze every
         # time the arm passes near a wrist-singular config.
-        return q_arm, err_norm < IK_TRACK_TOL, err_norm
+        return q_arm, err_norm < IK_TRACK_TOL, err_norm, IK_MAX_ITERS
 
     # ---------- services ----------
     def _calibrate_srv(self, request: Trigger.Request, response: Trigger.Response):
@@ -546,6 +563,15 @@ class QuestLeaderNode(Node):
 
     # ---------- main loop ----------
     def _ik_tick(self) -> None:
+        # Profiling — measure tick-to-tick gap before any early returns
+        # so we see the true rate the executor is firing this timer at.
+        tick_start = time.perf_counter()
+        if self._prof_last_tick_t > 0.0:
+            self._prof_tick_gaps_ms.append((tick_start - self._prof_last_tick_t) * 1000.0)
+            if len(self._prof_tick_gaps_ms) > 60:
+                self._prof_tick_gaps_ms = self._prof_tick_gaps_ms[-60:]
+        self._prof_last_tick_t = tick_start
+
         if not self._preview_on or self._state != STATE_ACTIVE:
             return
         if self._ctrl_ref is None or self._ee_ref is None:
@@ -564,6 +590,10 @@ class QuestLeaderNode(Node):
             )
             self._follow_on = False
             return
+
+        self._prof_ctrl_age_ms.append(ctrl_age * 1000.0)
+        if len(self._prof_ctrl_age_ms) > 60:
+            self._prof_ctrl_age_ms = self._prof_ctrl_age_ms[-60:]
 
         # Delta in WebXR (Quest) frame, then rotated into robot-world.
         # WebXR (per spec): +X right, +Y up, +Z back-toward-user — but
@@ -611,7 +641,14 @@ class QuestLeaderNode(Node):
         seed = (self._last_ik_solution
                 if self._last_ik_solution is not None
                 else np.zeros(N_ARM))
-        q_sol, ok, err_norm = self._ik(target_pos, target_rot, seed)
+        ik_t0 = time.perf_counter()
+        q_sol, ok, err_norm, iters = self._ik(target_pos, target_rot, seed)
+        ik_dur_ms = (time.perf_counter() - ik_t0) * 1000.0
+        self._prof_ik_ms.append(ik_dur_ms)
+        self._prof_iters.append(iters)
+        if len(self._prof_ik_ms) > 60:
+            self._prof_ik_ms = self._prof_ik_ms[-60:]
+            self._prof_iters = self._prof_iters[-60:]
 
         # Always-on diagnostic (1 Hz). Logs raw dp_quest / dr_quest
         # pre-rotation alongside their re-expressed-in-world forms, so
@@ -622,6 +659,11 @@ class QuestLeaderNode(Node):
         # For a single-axis rotation test (e.g. yaw the controller 30°
         # to the operator's right), axis-angle reads off the result
         # directly: |angle| ≈ 30, axis ≈ ±world-Z.
+        #
+        # Profiling line answers "where is teleop lag coming from?":
+        #   ik_ms avg > 33  → IK is the bottleneck (cap iters, raise rate)
+        #   eff_hz < ~28    → timer not firing fast enough (executor / GIL)
+        #   ctrl_age_ms hi  → upstream Quest/network lag, not us
         now = time.time()
         if now - self._last_ik_ok_log > 1.0:
             r3 = lambda v: np.round(v, 3).tolist()
@@ -635,13 +677,29 @@ class QuestLeaderNode(Node):
                     f"ang={math.degrees(ang):+.1f}° "
                     f"axis=[{axis[0]:+.2f},{axis[1]:+.2f},{axis[2]:+.2f}]"
                 )
+
+            def stats(buf: list, fmt: str = ".1f") -> str:
+                if not buf:
+                    return "n/a"
+                return (f"avg={sum(buf)/len(buf):{fmt}} "
+                        f"max={max(buf):{fmt}} n={len(buf)}")
+
+            eff_hz = (
+                1000.0 / (sum(self._prof_tick_gaps_ms) / len(self._prof_tick_gaps_ms))
+                if self._prof_tick_gaps_ms else 0.0
+            )
             self.get_logger().info(
                 f"[{self.side}] {'OK' if ok else 'FAIL'} err={err_norm:.4f}\n"
                 f"  POS  dp_quest={r3(dp_quest)} dp_world={r3(dp_world)} "
                 f"target_pos={r3(target_pos)}\n"
                 f"  ROT  dr_quest:  {axang(dr_quest)}\n"
                 f"       dr_world:  {axang(dr_world)}\n"
-                f"       dr_base :  {axang(dr_base)}"
+                f"       dr_base :  {axang(dr_base)}\n"
+                f"  PROF ik_ms[{stats(self._prof_ik_ms)}] "
+                f"iters[{stats(self._prof_iters, '.0f')}]\n"
+                f"       tick_gap_ms[{stats(self._prof_tick_gaps_ms)}] "
+                f"eff_hz={eff_hz:.1f} (target={IK_RATE_HZ:.0f})\n"
+                f"       ctrl_age_ms[{stats(self._prof_ctrl_age_ms)}]"
             )
             self._last_ik_ok_log = now
 
