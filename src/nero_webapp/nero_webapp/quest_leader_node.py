@@ -458,9 +458,11 @@ class QuestLeaderNode(Node):
         # Client for the agx_arm_ctrl set_normal_mode service. Used in
         # _reengage_position_hold to explicitly flip the firmware out of
         # MIT mode after Follow-off — without this, the first move_j
-        # the user issues mis-tracks the wrist.
+        # the user issues mis-tracks the wrist. Service path is flat
+        # under the arm namespace (matches the existing teach_mode /
+        # move_home pattern in webapp_node), not under .../control/.
         self._set_normal_mode_cli = self.create_client(
-            Empty, f"{ns}/control/set_normal_mode",
+            Empty, f"{ns}/set_normal_mode",
             callback_group=self._cb_group,
         )
 
