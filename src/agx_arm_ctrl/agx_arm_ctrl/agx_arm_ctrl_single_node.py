@@ -832,14 +832,15 @@ class AgxArmRosNode(Node):
 
     def _set_normal_mode_callback(self, request, response):
         """Force the firmware out of MIT/leader into position-control mode.
-        Called by quest_leader_node after a Follow-off so the next move_j
-        is honoured cleanly (without this, the wrist would visibly rotate
-        on the first user 'Send' click and need a second to correct)."""
+        Mirrors the teach-mode-off sequence (set_normal_mode + _enable_arm) —
+        without the re-enable step the wrist visibly rotates on the first
+        'Set Zero' after Follow-off and needs a second click to correct."""
         try:
             if self._check_arm_ready():
                 self.agx_arm.set_normal_mode()
+                self._enable_arm(True, timeout=3.0)
                 self.is_mit_mode = False
-                self.get_logger().info("set_normal_mode: firmware mode reset")
+                self.get_logger().info("set_normal_mode: firmware mode reset + re-enabled")
         except Exception as e:
             self.get_logger().error(f"set_normal_mode failed: {e}")
         return response
