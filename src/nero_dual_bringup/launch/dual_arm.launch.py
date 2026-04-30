@@ -235,6 +235,9 @@ def generate_launch_description() -> LaunchDescription:
         "launch", "start_single_agx_arm.launch.py",
     ])
 
+    # speed_percent: V1.11 firmware breaks at 100 — large move_j deltas are
+    # silently rejected and MIT-mode gravity comp goes rigid. 30 works.
+    # Likely tied to the V1.11 velocity-units bug (Agilex says fixed in V1.12).
     left_arm = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(single_arm_launch_path),
         launch_arguments={
@@ -242,6 +245,7 @@ def generate_launch_description() -> LaunchDescription:
             "can_port":      LaunchConfiguration("left_can"),
             "arm_type":      "nero",
             "effector_type": "none",
+            "speed_percent": "30",
         }.items(),
     )
 
@@ -252,6 +256,7 @@ def generate_launch_description() -> LaunchDescription:
             "can_port":      LaunchConfiguration("right_can"),
             "arm_type":      "nero",
             "effector_type": "none",
+            "speed_percent": "30",
         }.items(),
     )
 
