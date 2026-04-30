@@ -47,7 +47,7 @@ from rclpy.callback_groups import (
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
-from std_srvs.srv import Trigger, SetBool
+from std_srvs.srv import Trigger, SetBool, Empty
 
 import pinocchio as pin
 from scipy.spatial.transform import Rotation as R
@@ -370,12 +370,26 @@ class QuestLeaderNode(Node):
         self._latest_ctrl_ts: float = 0.0
         self._latest_joint_state: Optional[JointState] = None
         self._latest_joint_state_ts: float = 0.0
+        # Throttle gate for /feedback/joint_states. The topic publishes
+        # at ~200 Hz; downstream consumers (IK, gravity comp, position
+        # snapshots) only need ~60 Hz. Without this gate every JS frame
+        # took the lock, contributing measurable GIL contention to the
+        # IK tick (eff_hz dropped to 18-25). 16.6 ms ≈ 60 Hz.
+        self._js_min_period: float = 1.0 / 60.0
+        self._js_last_kept_ts: float = 0.0
 
         self._ctrl_ref: Optional[Pose6] = None
         self._ee_ref: Optional[Pose6] = None
         self._last_ik_solution: Optional[np.ndarray] = None
         self._last_ik_fail_log = 0.0
         self._last_ik_ok_log = 0.0
+        # Short-circuit state: when IK failed on essentially the same
+        # target two ticks in a row, skip the solve — the IK won't find
+        # a solution we don't already know about, and the wasted ~50 ms
+        # at MAX_ITERS is what was pushing eff_hz down to 18-25.
+        self._last_ik_target_pos: Optional[np.ndarray] = None
+        self._last_ik_target_rot: Optional[R] = None
+        self._last_ik_ok: bool = True
 
         # Rolling profiling buffers — last ~2 s at 30 Hz. Surfaced on the
         # 1 Hz diagnostic log so we can tell where teleop lag comes from:
@@ -441,6 +455,15 @@ class QuestLeaderNode(Node):
             PoseStamped, f"{ns}/quest_leader/controller_viz", 10,
         )
 
+        # Client for the agx_arm_ctrl set_normal_mode service. Used in
+        # _reengage_position_hold to explicitly flip the firmware out of
+        # MIT mode after Follow-off — without this, the first move_j
+        # the user issues mis-tracks the wrist.
+        self._set_normal_mode_cli = self.create_client(
+            Empty, f"{ns}/control/set_normal_mode",
+            callback_group=self._cb_group,
+        )
+
         self.create_service(
             Trigger, f"{ns}/quest_leader/calibrate",
             self._calibrate_srv, callback_group=self._cb_group,
@@ -470,9 +493,13 @@ class QuestLeaderNode(Node):
             self._latest_ctrl_ts = time.time()
 
     def _js_cb(self, msg: JointState) -> None:
+        now = time.time()
+        if now - self._js_last_kept_ts < self._js_min_period:
+            return
+        self._js_last_kept_ts = now
         with self._lock:
             self._latest_joint_state = msg
-            self._latest_joint_state_ts = time.time()
+            self._latest_joint_state_ts = now
 
     # ---------- feedback helpers ----------
     def _current_arm_q(self) -> Optional[np.ndarray]:
@@ -518,25 +545,22 @@ class QuestLeaderNode(Node):
     def _reengage_position_hold(self) -> None:
         """Hand the arm cleanly back from MIT to position-hold mode.
 
-        Empirical sequence — single soft-zero+move_j wasn't sufficient:
-        the wrist (low kp=2 in tracking) would visibly rotate on the
-        transition and even the next move_j (slider "Send to robot")
-        wouldn't fix it; only a SECOND move_j after a delay did. So we
-        bias toward over-publishing:
+        Without an explicit firmware mode reset, the first move_j after
+        Follow-off mis-tracked the wrist — the user had to click Send a
+        second time for it to correct. Sequence:
 
-          1. Publish soft-zero MIT (kp=0, kd intact, p_des=q_current,
-             t_ff=G(q)) for ~200 ms — 5 frames at 40 ms — to bleed off
-             the active impedance and let the firmware's MIT-mode
-             internal state quiesce.
-          2. Publish move_j at q_current to flip the firmware out of
-             MIT into position mode.
-          3. After 100 ms, publish move_j AGAIN (defensive). The first
-             move_j after MIT is the one we observed mis-tracking the
-             wrist; the second one consistently fixed it. Sending it
-             ourselves means the user doesn't have to click "Send"
-             twice.
+          1. Soft-zero MIT (kp=0, kd intact, p_des=q_current, t_ff=G(q))
+             for ~200 ms — 5 frames at 40 ms — to bleed off the active
+             impedance.
+          2. Call agx_arm_ctrl_single_node /control/set_normal_mode,
+             which calls arm.set_normal_mode() in the SDK. This is the
+             same firmware reset teach_mode-off uses; without it, the
+             firmware stays in MIT and the next move_j is honoured
+             erratically.
+          3. Publish move_j at the current q so the arm holds where it
+             is now (not where it was when soft-zero started).
 
-        Total ~300 ms. Safe to sleep here — this method is only called
+        Total ~250 ms. Safe to sleep here — this method is only called
         from service callbacks (ReentrantCallbackGroup), so the IK
         timer keeps firing on its own executor thread."""
         q_current = self._current_arm_q()
@@ -560,6 +584,20 @@ class QuestLeaderNode(Node):
             self._mit_pub.publish(soft)
             time.sleep(0.04)
 
+        # Explicitly reset the firmware mode. call_async + a short wait
+        # keeps us off the executor thread that would service the
+        # response — we don't need the result, just the side effect on
+        # the SDK/arm. 100 ms covers ROS2 service round-trip + the SDK
+        # call + firmware ack with margin.
+        if self._set_normal_mode_cli.service_is_ready():
+            self._set_normal_mode_cli.call_async(Empty.Request())
+        else:
+            self.get_logger().warn(
+                f"[{self.side}] set_normal_mode service not ready — "
+                f"skipping firmware mode reset"
+            )
+        time.sleep(0.1)
+
         q_final = self._current_arm_q()
         if q_final is None:
             q_final = q_current
@@ -569,18 +607,9 @@ class QuestLeaderNode(Node):
         msg.position = q_final.tolist()
         self._pos_hold_pub.publish(msg)
 
-        time.sleep(0.1)
-        msg.header.stamp = self.get_clock().now().to_msg()
-        # Re-read q_current so the second move_j commands wherever the
-        # arm settled after the first one — not where it was 100 ms ago.
-        q_settle = self._current_arm_q()
-        if q_settle is not None:
-            msg.position = q_settle.tolist()
-        self._pos_hold_pub.publish(msg)
-
         self.get_logger().info(
             f"[{self.side}] re-engaged position hold "
-            f"(5x soft-zero MIT → 2x move_j)"
+            f"(soft-zero MIT → set_normal_mode → move_j)"
         )
 
     # ---------- FK / IK (Pinocchio, in-process) ----------
@@ -877,6 +906,25 @@ class QuestLeaderNode(Node):
             # path. Useful for bisecting frame-mapping bugs.
             target_rot = self._ee_ref.rot
 
+        # If the previous IK call already failed on essentially the same
+        # target (1 mm / 0.5°), don't re-run it — the same SR-DLS with
+        # the same seed and same target is going to take the same path
+        # and burn the same ~50 ms at MAX_ITERS for no useful output.
+        # The user sees the same "ghost frozen at last good solution"
+        # behaviour as before; we just don't pay for it.
+        skip_ik = False
+        if (not self._last_ik_ok
+                and self._last_ik_target_pos is not None
+                and self._last_ik_target_rot is not None):
+            dpos = float(np.linalg.norm(target_pos - self._last_ik_target_pos))
+            drot = self._last_ik_target_rot.inv() * target_rot
+            drot_ang = float(np.linalg.norm(drot.as_rotvec()))
+            if dpos < 1e-3 and drot_ang < math.radians(0.5):
+                skip_ik = True
+
+        if skip_ik:
+            return
+
         seed = (self._last_ik_solution
                 if self._last_ik_solution is not None
                 else np.zeros(N_ARM))
@@ -888,6 +936,12 @@ class QuestLeaderNode(Node):
         if len(self._prof_ik_ms) > 60:
             self._prof_ik_ms = self._prof_ik_ms[-60:]
             self._prof_iters = self._prof_iters[-60:]
+
+        # Update short-circuit state regardless of ok — the next tick
+        # uses these to decide whether to skip.
+        self._last_ik_target_pos = target_pos.copy()
+        self._last_ik_target_rot = target_rot
+        self._last_ik_ok = ok
 
         # Always-on diagnostic (1 Hz). Logs raw dp_quest / dr_quest
         # pre-rotation alongside their re-expressed-in-world forms, so

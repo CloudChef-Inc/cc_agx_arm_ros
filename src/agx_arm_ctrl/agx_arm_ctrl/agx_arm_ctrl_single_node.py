@@ -271,6 +271,7 @@ class AgxArmRosNode(Node):
         self.create_service(SetBool, "teach_mode", self._teach_mode_callback)
         self.create_service(Empty, "move_home", self._move_home_callback)
         self.create_service(Empty, "emergency_stop", self._emergency_stop_callback)
+        self.create_service(Empty, "set_normal_mode", self._set_normal_mode_callback)
         if not self.is_switch_seamlessly:
             self.create_service(Empty, "exit_teach_mode", self._exit_teach_mode_callback)
 
@@ -827,6 +828,20 @@ class AgxArmRosNode(Node):
             response.success = False
             response.message = f"Exception: {str(e)}"
             self.get_logger().error(f"teach_mode toggle failed: {str(e)}")
+        return response
+
+    def _set_normal_mode_callback(self, request, response):
+        """Force the firmware out of MIT/leader into position-control mode.
+        Called by quest_leader_node after a Follow-off so the next move_j
+        is honoured cleanly (without this, the wrist would visibly rotate
+        on the first user 'Send' click and need a second to correct)."""
+        try:
+            if self._check_arm_ready():
+                self.agx_arm.set_normal_mode()
+                self.is_mit_mode = False
+                self.get_logger().info("set_normal_mode: firmware mode reset")
+        except Exception as e:
+            self.get_logger().error(f"set_normal_mode failed: {e}")
         return response
 
     def _move_home_callback(self, request, response):
