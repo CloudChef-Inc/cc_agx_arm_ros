@@ -609,9 +609,13 @@ class QuestLeaderNode(Node):
         msg.position = q_final.tolist()
         self._pos_hold_pub.publish(msg)
 
+        q_start = [round(float(v), 4) for v in q_current]
+        q_held = [round(float(v), 4) for v in q_final]
+        delta = [round(h - s, 4) for h, s in zip(q_held, q_start)]
         self.get_logger().info(
             f"[{self.side}] re-engaged position hold "
-            f"(soft-zero MIT → set_normal_mode → move_j)"
+            f"(soft-zero MIT → set_normal_mode → move_j) "
+            f"q_start={q_start} q_held={q_held} delta={delta}"
         )
 
     # ---------- FK / IK (Pinocchio, in-process) ----------

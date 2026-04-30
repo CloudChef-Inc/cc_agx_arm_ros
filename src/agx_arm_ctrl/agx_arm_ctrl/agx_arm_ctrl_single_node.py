@@ -574,12 +574,49 @@ class AgxArmRosNode(Node):
         }
         if arm_joints:
             joints = [arm_joints.get(name, 0) for name in self.arm_joint_names]
+            mode = "move_js" if self.fast_mode else "move_j"
+            self._log_arm_cmd(mode, joints)
             if self.fast_mode:
                 self.agx_arm.move_js(joints)
                 self.is_mit_mode = True
             else:
                 self.agx_arm.move_j(joints)
                 self.is_mit_mode = False
+
+    def _log_arm_cmd(self, mode: str, target):
+        """Throttled log of arm joint commands for debugging Set Zero / Follow.
+
+        Logs immediately on every call where any joint differs from the last
+        logged target by > 0.05 rad (catches Set Zero / move-home jumps),
+        otherwise emits a periodic heartbeat at ≤2 Hz so steady-state teleop
+        leaves traces but doesn't flood. Includes live SDK feedback so we can
+        see if the firmware-reported position diverges from the command."""
+        try:
+            now = time.time()
+            tgt = [round(float(v), 4) for v in target]
+            last = getattr(self, "_last_logged_cmd", None)
+            last_ts = getattr(self, "_last_logged_cmd_ts", 0.0)
+            big_jump = (
+                last is None
+                or any(abs(t - l) > 0.05 for t, l in zip(tgt, last))
+            )
+            if not (big_jump or now - last_ts > 0.5):
+                return
+            cur_msg = self.agx_arm.get_joint_angles()
+            if cur_msg is not None and cur_msg.hz > 0:
+                cur = [round(float(v), 4) for v in cur_msg.msg[: self.arm_joint_count]]
+                delta = [round(t - c, 4) for t, c in zip(tgt, cur)]
+            else:
+                cur, delta = "n/a", "n/a"
+            tag = "JUMP" if big_jump else "tick"
+            self.get_logger().info(
+                f"[{tag}] {mode} target={tgt} current={cur} delta={delta} "
+                f"is_mit_mode_pre={self.is_mit_mode}"
+            )
+            self._last_logged_cmd = tgt
+            self._last_logged_cmd_ts = now
+        except Exception as e:
+            self.get_logger().warn(f"_log_arm_cmd failed: {e}")
 
     def _control_gripper_joint(self, joint_pos, joint_effort):
         if self.gripper is None:
@@ -834,13 +871,31 @@ class AgxArmRosNode(Node):
         """Force the firmware out of MIT/leader into position-control mode.
         Mirrors the teach-mode-off sequence (set_normal_mode + _enable_arm) —
         without the re-enable step the wrist visibly rotates on the first
-        'Set Zero' after Follow-off and needs a second click to correct."""
+        'Set Zero' after Follow-off and needs a second click to correct.
+
+        Logs SDK-reported joint angles before set_normal_mode and after
+        _enable_arm — if the wrist is still misbehaving we can compare the
+        two readings to see whether the firmware's notion of 'current
+        position' shifts as a side effect of the mode swap."""
         try:
             if self._check_arm_ready():
+                pre = self.agx_arm.get_joint_angles()
+                pre_q = (
+                    [round(float(v), 4) for v in pre.msg[: self.arm_joint_count]]
+                    if pre is not None and pre.hz > 0 else "n/a"
+                )
                 self.agx_arm.set_normal_mode()
                 self._enable_arm(True, timeout=3.0)
                 self.is_mit_mode = False
-                self.get_logger().info("set_normal_mode: firmware mode reset + re-enabled")
+                post = self.agx_arm.get_joint_angles()
+                post_q = (
+                    [round(float(v), 4) for v in post.msg[: self.arm_joint_count]]
+                    if post is not None and post.hz > 0 else "n/a"
+                )
+                self.get_logger().info(
+                    f"set_normal_mode: firmware mode reset + re-enabled "
+                    f"q_pre={pre_q} q_post={post_q}"
+                )
         except Exception as e:
             self.get_logger().error(f"set_normal_mode failed: {e}")
         return response
