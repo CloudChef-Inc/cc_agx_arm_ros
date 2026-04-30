@@ -861,8 +861,20 @@ class AgxArmRosNode(Node):
                     response.success = False
                     response.message = "Arm not connected"
                     return response
+                # Tell the firmware which side this arm is mounted on so its
+                # internal gravity comp pushes the right way. Per the SDK:
+                # 0=unset, 1=horizontal, 2=side-left, 3=side-right.
+                ns = self.get_namespace().strip("/").lower()
+                ipos = 3 if ns == "right" else 2 if ns == "left" else 0
+                try:
+                    self.agx_arm._msg_mode.installation_pos = ipos
+                    time.sleep(1.0)  # SDK requires 1s before mode switch
+                except Exception as e:
+                    self.get_logger().warn(
+                        f"could not set installation_pos={ipos}: {e}")
                 self.agx_arm.set_leader_mode()
-                self.get_logger().info("Teach mode ENABLED (leader zero-force drag)")
+                self.get_logger().info(
+                    f"Teach mode ENABLED (leader, installation_pos={ipos})")
                 response.success = True
                 response.message = "teach_mode enabled"
             else:
