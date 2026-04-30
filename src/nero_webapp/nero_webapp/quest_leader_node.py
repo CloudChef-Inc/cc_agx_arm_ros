@@ -577,6 +577,7 @@ class QuestLeaderNode(Node):
         soft.v_des = [0.0] * N_ARM
         soft.kp = [0.0] * N_ARM
         soft.kd = list(self._mit_kd)
+        soft_log = []
         for i in range(5):
             q_now = self._current_arm_q()
             if q_now is None:
@@ -584,7 +585,11 @@ class QuestLeaderNode(Node):
             soft.p_des = q_now.tolist()
             soft.torque = self._gravity_torque(q_now)
             self._mit_pub.publish(soft)
+            soft_log.append([round(float(v), 4) for v in q_now])
             time.sleep(0.04)
+        self.get_logger().info(
+            f"[{self.side}] soft-zero MIT feedback per frame: {soft_log}"
+        )
 
         # Explicitly reset the firmware mode. call_async + a short wait
         # keeps us off the executor thread that would service the

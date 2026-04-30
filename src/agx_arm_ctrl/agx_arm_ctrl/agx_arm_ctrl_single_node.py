@@ -431,6 +431,18 @@ class AgxArmRosNode(Node):
         if joint_states is None or joint_states.hz <= 0:
             return
 
+        # 1 Hz heartbeat of the raw SDK feedback so we can see exactly when
+        # any wrist joint (5/6/7) transitions to zero outside of any commanded
+        # motion — that's the wrist-rotation-on-first-Set-Zero bug pattern.
+        try:
+            now = time.time()
+            if now - getattr(self, "_fb_log_ts", 0.0) > 1.0:
+                snap = [round(float(v), 4) for v in joint_states.msg[: self.arm_joint_count]]
+                self.get_logger().info(f"[fb] joints={snap} hz={joint_states.hz}")
+                self._fb_log_ts = now
+        except Exception:
+            pass
+
         velocitys = []
         efforts = []
         for joint_index in range(1, self.arm_joint_count+1):
@@ -879,22 +891,21 @@ class AgxArmRosNode(Node):
         position' shifts as a side effect of the mode swap."""
         try:
             if self._check_arm_ready():
-                pre = self.agx_arm.get_joint_angles()
-                pre_q = (
-                    [round(float(v), 4) for v in pre.msg[: self.arm_joint_count]]
-                    if pre is not None and pre.hz > 0 else "n/a"
-                )
+                def snap(label):
+                    js = self.agx_arm.get_joint_angles()
+                    if js is None or js.hz <= 0:
+                        return "n/a"
+                    return [round(float(v), 4) for v in js.msg[: self.arm_joint_count]]
+
+                pre_q = snap("pre")
                 self.agx_arm.set_normal_mode()
+                mid_q = snap("mid")
                 self._enable_arm(True, timeout=3.0)
+                post_q = snap("post")
                 self.is_mit_mode = False
-                post = self.agx_arm.get_joint_angles()
-                post_q = (
-                    [round(float(v), 4) for v in post.msg[: self.arm_joint_count]]
-                    if post is not None and post.hz > 0 else "n/a"
-                )
                 self.get_logger().info(
                     f"set_normal_mode: firmware mode reset + re-enabled "
-                    f"q_pre={pre_q} q_post={post_q}"
+                    f"q_pre={pre_q} q_mid={mid_q} q_post={post_q}"
                 )
         except Exception as e:
             self.get_logger().error(f"set_normal_mode failed: {e}")
