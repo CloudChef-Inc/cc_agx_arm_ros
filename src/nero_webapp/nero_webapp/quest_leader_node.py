@@ -545,26 +545,25 @@ class QuestLeaderNode(Node):
         return out
 
     def _reengage_position_hold(self) -> None:
-        """Hand the arm cleanly back from MIT to position-hold mode.
+        """Hand the arm back from MIT to position-hold by relying on the
+        SDK's seamless mode-switch contract.
 
-        Without an explicit firmware mode reset, the first move_j after
-        Follow-off mis-tracked the wrist — the user had to click Send a
-        second time for it to correct. Sequence:
+        On Nero V1.11 the SDK is initialised with is_switch_seamlessly=
+        True (agx_arm_ctrl_single_node line 122). Upstream's own
+        _emergency_stop_callback uses this contract: when transitioning
+        out of MIT it just calls arm.move_j(q) with no prior
+        set_normal_mode and no enable cycle. Our earlier additions
+        (soft-zero MIT publish + explicit set_normal_mode service +
+        _enable_arm) bypassed that contract and queued a reset/init
+        trajectory on the wrist motors ahead of our hold target — the
+        wrist would slew away over ~3 s after Follow-off and the next
+        Set-Zero would also slew along the queued trajectory, taking
+        two clicks to land.
 
-          1. Soft-zero MIT (kp=0, kd intact, p_des=q_current, t_ff=G(q))
-             for ~200 ms — 5 frames at 40 ms — to bleed off the active
-             impedance.
-          2. Call agx_arm_ctrl_single_node /control/set_normal_mode,
-             which calls arm.set_normal_mode() in the SDK. This is the
-             same firmware reset teach_mode-off uses; without it, the
-             firmware stays in MIT and the next move_j is honoured
-             erratically.
-          3. Publish move_j at the current q so the arm holds where it
-             is now (not where it was when soft-zero started).
-
-        Total ~250 ms. Safe to sleep here — this method is only called
-        from service callbacks (ReentrantCallbackGroup), so the IK
-        timer keeps firing on its own executor thread."""
+        Just publish move_j(q_current) and let the SDK do the right
+        thing per the seamless contract. The diagnostic heartbeats in
+        agx_arm_ctrl_single_node will catch the wrist if anything still
+        drifts."""
         q_current = self._current_arm_q()
         if q_current is None:
             self.get_logger().warn(
@@ -572,55 +571,15 @@ class QuestLeaderNode(Node):
                 f"no fresh joint feedback"
             )
             return
-        soft = MoveMITMsg()
-        soft.joint_index = list(range(1, N_ARM + 1))
-        soft.v_des = [0.0] * N_ARM
-        soft.kp = [0.0] * N_ARM
-        soft.kd = list(self._mit_kd)
-        soft_log = []
-        for i in range(5):
-            q_now = self._current_arm_q()
-            if q_now is None:
-                q_now = q_current
-            soft.p_des = q_now.tolist()
-            soft.torque = self._gravity_torque(q_now)
-            self._mit_pub.publish(soft)
-            soft_log.append([round(float(v), 4) for v in q_now])
-            time.sleep(0.04)
-        self.get_logger().info(
-            f"[{self.side}] soft-zero MIT feedback per frame: {soft_log}"
-        )
-
-        # Explicitly reset the firmware mode. call_async + a short wait
-        # keeps us off the executor thread that would service the
-        # response — we don't need the result, just the side effect on
-        # the SDK/arm. 100 ms covers ROS2 service round-trip + the SDK
-        # call + firmware ack with margin.
-        if self._set_normal_mode_cli.service_is_ready():
-            self._set_normal_mode_cli.call_async(Empty.Request())
-        else:
-            self.get_logger().warn(
-                f"[{self.side}] set_normal_mode service not ready — "
-                f"skipping firmware mode reset"
-            )
-        time.sleep(0.1)
-
-        q_final = self._current_arm_q()
-        if q_final is None:
-            q_final = q_current
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = list(ARM_JOINT_NAMES)
-        msg.position = q_final.tolist()
+        msg.position = q_current.tolist()
         self._pos_hold_pub.publish(msg)
-
-        q_start = [round(float(v), 4) for v in q_current]
-        q_held = [round(float(v), 4) for v in q_final]
-        delta = [round(h - s, 4) for h, s in zip(q_held, q_start)]
+        q_held = [round(float(v), 4) for v in q_current]
         self.get_logger().info(
-            f"[{self.side}] re-engaged position hold "
-            f"(soft-zero MIT → set_normal_mode → move_j) "
-            f"q_start={q_start} q_held={q_held} delta={delta}"
+            f"[{self.side}] re-engaged position hold (seamless move_j) "
+            f"q_held={q_held}"
         )
 
     # ---------- FK / IK (Pinocchio, in-process) ----------
