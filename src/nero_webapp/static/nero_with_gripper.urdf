@@ -273,10 +273,18 @@
         </collision>
     </link>
     <joint name="gripper_base_joint" type="fixed">
-        <!-- Ry(-pi/2) aligns the Pika's coordinate frame (fingers
-             along X) with the arm chain direction. Same rotation
-             used in the official Piper+Pika combined URDF. -->
-        <origin xyz="0 0 0.0055" rpy="3.1416 -1.5708 0"/>
+        <!-- Identity rpy mirrors curobo_ik_ros's nero_single_isaac.urdf
+             so our Pinocchio FK and cuRobo's IK place gripper_tip in
+             the SAME physical location. Previously this carried
+             rpy="3.1416 -1.5708 0" so the Pika finger meshes pointed
+             along the chain's +X — that aligns the static gripper
+             visual but makes our gripper_tip frame disagree with
+             cuRobo's by ~18 cm. We pay the cost in mesh-orientation
+             visualization (Pika fingers display rotated relative to
+             the old layout) to keep FK kinematically consistent
+             with the IK solver; the actual joint commands sent to
+             the arm are correct. -->
+        <origin xyz="0 0 0.0055" rpy="0 0 0"/>
         <parent link="gripper_flange"/>
         <child link="gripper_base"/>
     </joint>
