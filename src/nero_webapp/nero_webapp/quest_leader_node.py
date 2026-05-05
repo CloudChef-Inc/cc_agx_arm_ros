@@ -54,9 +54,25 @@ from scipy.spatial.transform import Rotation as R
 
 from agx_arm_msgs.msg import MoveMITMsg
 
+# Optional cuRobo IK service. Imported lazily so the package keeps
+# building without curobo_ik_ros sourced; runtime checks below decide
+# whether to actually use it.
+try:
+    from curobo_ik_ros.srv import SolveIK
+    _CUROBO_AVAILABLE = True
+except ImportError:
+    SolveIK = None  # type: ignore
+    _CUROBO_AVAILABLE = False
+
 
 ARM_JOINT_NAMES = [f"joint{i}" for i in range(1, 8)]
 N_ARM = 7
+
+# How long a cuRobo solution stays usable before we treat it as stale.
+# Round-trip is typically 10-25 ms; if we haven't received a response
+# in this window the cache is discarded and the next tick skips the
+# publish rather than driving the arm with old data.
+CUROBO_STALE_S = 0.15
 
 # Calibration joint poses (radians, 7-DOF arm) + gripper width (metres).
 # Bench-tuned values: operator holds Quest controllers out in front at
@@ -209,6 +225,14 @@ class QuestLeaderNode(Node):
         # we've seen in the logs; bumped to 0.2 s so transient stalls
         # don't make Follow drop a tick.
         self.declare_parameter("feedback_timeout", 0.2)
+        # cuRobo IK service. When use_curobo_ik=True, replace the local
+        # SR-DLS solver with a fire-and-forget async call to a cuRobo
+        # service. Empty curobo_service_name = "/<side>/solve_ik" by
+        # default. Falls back to local IK if the service type isn't
+        # importable (curobo_ik_ros not sourced) or curobo_service_name
+        # is set explicitly to "".
+        self.declare_parameter("use_curobo_ik", False)
+        self.declare_parameter("curobo_service_name", "")
 
         self.side: str = self.get_parameter("side").value
         self.ee_link: str = self.get_parameter("ee_link").value
@@ -479,13 +503,58 @@ class QuestLeaderNode(Node):
             self._follow_srv, callback_group=self._cb_group,
         )
 
+        # cuRobo IK client. Async fire-and-forget pattern: each tick may
+        # send a new SolveIK request if no prior one is in flight, and
+        # _ik_tick consumes whatever solution is currently cached. This
+        # keeps the 30 Hz tick deterministic regardless of solver-side
+        # latency and gives us "smoothing for free" — every tick uses
+        # the most recent valid solution, so transient solve failures
+        # just hold the previous pose instead of dropping the frame.
+        self._use_curobo: bool = bool(
+            self.get_parameter("use_curobo_ik").value
+        )
+        curobo_service_name: str = (
+            str(self.get_parameter("curobo_service_name").value)
+            or f"/{self.side}/solve_ik"
+        )
+        self._curobo_client = None
+        self._curobo_in_flight: bool = False
+        self._curobo_request_t: float = 0.0
+        self._curobo_solution_cache: Optional[np.ndarray] = None
+        self._curobo_last_response_t: float = 0.0
+        self._curobo_last_solve_ms: float = 0.0
+        self._curobo_last_success: bool = False
+        self._curobo_last_error: str = ""
+        self._curobo_warned_unavailable: bool = False
+        self._prof_curobo_rtt_ms: List[float] = []
+        if self._use_curobo:
+            if not _CUROBO_AVAILABLE:
+                self.get_logger().error(
+                    f"[{self.side}] use_curobo_ik=True but curobo_ik_ros.srv.SolveIK "
+                    f"not importable. Source ros2_ws/install/setup.bash before "
+                    f"launching. Falling back to local Pinocchio IK."
+                )
+                self._use_curobo = False
+            else:
+                # Reentrant group so the response callback can fire while
+                # an IK tick is running on _cb_group_ik.
+                self._cb_group_curobo = ReentrantCallbackGroup()
+                self._curobo_client = self.create_client(
+                    SolveIK, curobo_service_name,
+                    callback_group=self._cb_group_curobo,
+                )
+                self.get_logger().info(
+                    f"[{self.side}] cuRobo IK enabled, service={curobo_service_name} "
+                    f"(stale window {CUROBO_STALE_S * 1000:.0f} ms)"
+                )
+
         self.create_timer(1.0 / IK_RATE_HZ, self._ik_tick, callback_group=self._cb_group_ik)
         self.create_timer(0.2, self._publish_status, callback_group=self._cb_group)
         self.create_timer(0.2, self._calibration_tick, callback_group=self._cb_group)
 
         self.get_logger().info(
             f"quest_leader_node up (side={self.side}, ee={self.ee_link}, "
-            f"in-process Pinocchio FK/IK)"
+            f"IK={'cuRobo' if self._use_curobo else 'Pinocchio SR-DLS'})"
         )
 
     # ---------- subscriptions ----------
@@ -794,6 +863,84 @@ class QuestLeaderNode(Node):
         response.message = f"follow={'on' if self._follow_on else 'off'}"
         return response
 
+    # ---------- cuRobo IK ----------
+    def _send_curobo_request(
+        self,
+        target_pos: np.ndarray,
+        target_rot: R,
+        seed: np.ndarray,
+    ) -> None:
+        """Issue an async SolveIK call. Caller must hold no lock."""
+        req = SolveIK.Request()
+        req.target_pose.position.x = float(target_pos[0])
+        req.target_pose.position.y = float(target_pos[1])
+        req.target_pose.position.z = float(target_pos[2])
+        # scipy quat is (x, y, z, w); geometry_msgs Quaternion is the same.
+        qx, qy, qz, qw = target_rot.as_quat()
+        req.target_pose.orientation.x = float(qx)
+        req.target_pose.orientation.y = float(qy)
+        req.target_pose.orientation.z = float(qz)
+        req.target_pose.orientation.w = float(qw)
+        # Empty target_frame skips the server-side base-frame check;
+        # we already produce target_pos/target_rot in the arm's
+        # base_link, which is the solver's base frame.
+        req.target_frame = ""
+        req.joint_names = list(ARM_JOINT_NAMES)
+        # cuRobo ignores seed today (per srv comment) but the wire
+        # format keeps it for API compat. Send our last solution
+        # anyway so we're forward-compatible with a future server.
+        req.seed_joint_positions = [float(v) for v in seed]
+        req.position_only = False
+
+        self._curobo_request_t = time.perf_counter()
+        self._curobo_in_flight = True
+        future = self._curobo_client.call_async(req)
+        future.add_done_callback(self._on_curobo_response)
+
+    def _on_curobo_response(self, future) -> None:
+        try:
+            resp = future.result()
+        except Exception as e:
+            self.get_logger().warn(f"[{self.side}] cuRobo call failed: {e}")
+            self._curobo_in_flight = False
+            self._curobo_last_success = False
+            self._curobo_last_error = str(e)
+            return
+
+        rtt_ms = (time.perf_counter() - self._curobo_request_t) * 1000.0
+        self._prof_curobo_rtt_ms.append(rtt_ms)
+        if len(self._prof_curobo_rtt_ms) > 60:
+            self._prof_curobo_rtt_ms = self._prof_curobo_rtt_ms[-60:]
+
+        self._curobo_last_solve_ms = float(resp.solve_time_ms)
+        self._curobo_last_success = bool(resp.success)
+        self._curobo_last_error = str(resp.error_message)
+
+        if resp.success and len(resp.joint_positions) >= N_ARM:
+            # Map response by joint name where possible — robust to
+            # solver-side reordering. Fall back to positional order
+            # if the server didn't populate solved_joint_names.
+            jp_by_name = dict(zip(
+                list(resp.solved_joint_names),
+                list(resp.joint_positions),
+            ))
+            try:
+                q_sol = np.array(
+                    [jp_by_name[name] for name in ARM_JOINT_NAMES],
+                    dtype=float,
+                )
+            except KeyError:
+                q_sol = np.array(
+                    list(resp.joint_positions)[:N_ARM], dtype=float,
+                )
+            self._curobo_solution_cache = q_sol
+            self._curobo_last_response_t = time.time()
+            # Mirror into _last_ik_solution so non-cuRobo code paths
+            # (seeding, fallback) keep working.
+            self._last_ik_solution = q_sol
+
+        self._curobo_in_flight = False
+
     # ---------- main loop ----------
     def _ik_tick(self) -> None:
         # Profiling — measure tick-to-tick gap before any early returns
@@ -898,14 +1045,57 @@ class QuestLeaderNode(Node):
         seed = (self._last_ik_solution
                 if self._last_ik_solution is not None
                 else np.zeros(N_ARM))
-        ik_t0 = time.perf_counter()
-        q_sol, ok, err_norm, iters = self._ik(target_pos, target_rot, seed)
-        ik_dur_ms = (time.perf_counter() - ik_t0) * 1000.0
-        self._prof_ik_ms.append(ik_dur_ms)
-        self._prof_iters.append(iters)
-        if len(self._prof_ik_ms) > 60:
-            self._prof_ik_ms = self._prof_ik_ms[-60:]
-            self._prof_iters = self._prof_iters[-60:]
+
+        if self._use_curobo:
+            # Fire-and-forget: queue a fresh request unless one's still
+            # in flight. The previous response (if any) is already in
+            # _curobo_solution_cache; we use it to drive this tick's
+            # publishes. New solutions arrive asynchronously and update
+            # the cache for the NEXT tick.
+            if self._curobo_client is not None:
+                if self._curobo_client.service_is_ready():
+                    if not self._curobo_in_flight:
+                        self._send_curobo_request(target_pos, target_rot, seed)
+                else:
+                    if not self._curobo_warned_unavailable:
+                        self.get_logger().warn(
+                            f"[{self.side}] cuRobo service not ready yet — "
+                            f"holding pose until it comes up"
+                        )
+                        self._curobo_warned_unavailable = True
+            # Decide if we have a usable solution to publish this tick.
+            now_t = time.time()
+            age = now_t - self._curobo_last_response_t
+            has_fresh = (
+                self._curobo_solution_cache is not None
+                and self._curobo_last_response_t > 0.0
+                and age < CUROBO_STALE_S
+            )
+            if has_fresh:
+                q_sol = self._curobo_solution_cache
+                ok = True
+            else:
+                q_sol = None
+                ok = False
+            # Reuse the same prof bucket name (ik_ms) but populate it
+            # with cuRobo's reported solver time so the existing log
+            # line stays readable.
+            err_norm = 0.0 if ok else float("inf")
+            iters = int(self._curobo_last_solve_ms)
+            self._prof_ik_ms.append(self._curobo_last_solve_ms)
+            self._prof_iters.append(iters)
+            if len(self._prof_ik_ms) > 60:
+                self._prof_ik_ms = self._prof_ik_ms[-60:]
+                self._prof_iters = self._prof_iters[-60:]
+        else:
+            ik_t0 = time.perf_counter()
+            q_sol, ok, err_norm, iters = self._ik(target_pos, target_rot, seed)
+            ik_dur_ms = (time.perf_counter() - ik_t0) * 1000.0
+            self._prof_ik_ms.append(ik_dur_ms)
+            self._prof_iters.append(iters)
+            if len(self._prof_ik_ms) > 60:
+                self._prof_ik_ms = self._prof_ik_ms[-60:]
+                self._prof_iters = self._prof_iters[-60:]
 
         # Update short-circuit state regardless of ok — the next tick
         # uses these to decide whether to skip.
@@ -951,6 +1141,19 @@ class QuestLeaderNode(Node):
                 1000.0 / (sum(self._prof_tick_gaps_ms) / len(self._prof_tick_gaps_ms))
                 if self._prof_tick_gaps_ms else 0.0
             )
+            ik_label = "curobo_solve_ms" if self._use_curobo else "ik_ms"
+            iters_label = (
+                "(solve_ms repeat)" if self._use_curobo else "iters"
+            )
+            extra = ""
+            if self._use_curobo:
+                extra = (
+                    f"\n       curobo_rtt_ms[{stats(self._prof_curobo_rtt_ms)}] "
+                    f"in_flight={self._curobo_in_flight} "
+                    f"last_ok={self._curobo_last_success}"
+                )
+                if self._curobo_last_error:
+                    extra += f" last_err='{self._curobo_last_error[:60]}'"
             self.get_logger().info(
                 f"[{self.side}] {'OK' if ok else 'FAIL'} err={err_norm:.4f}\n"
                 f"  POS  dp_quest={r3(dp_quest)} dp_world={r3(dp_world)} "
@@ -958,11 +1161,12 @@ class QuestLeaderNode(Node):
                 f"  ROT  dr_quest:  {axang(dr_quest)}\n"
                 f"       dr_world:  {axang(dr_world)}\n"
                 f"       dr_base :  {axang(dr_base)}\n"
-                f"  PROF ik_ms[{stats(self._prof_ik_ms)}] "
-                f"iters[{stats(self._prof_iters, '.0f')}]\n"
+                f"  PROF {ik_label}[{stats(self._prof_ik_ms)}] "
+                f"{iters_label}[{stats(self._prof_iters, '.0f')}]\n"
                 f"       tick_gap_ms[{stats(self._prof_tick_gaps_ms)}] "
                 f"eff_hz={eff_hz:.1f} (target={IK_RATE_HZ:.0f})\n"
                 f"       ctrl_age_ms[{stats(self._prof_ctrl_age_ms)}]"
+                f"{extra}"
             )
             self._last_ik_ok_log = now
 

@@ -202,6 +202,14 @@ def generate_launch_description() -> LaunchDescription:
                     "controller trajectory. Only consumed by quest_teleop_node "
                     "when quest_debug:=true.",
     )
+    use_curobo_ik_arg = DeclareLaunchArgument(
+        "use_curobo_ik", default_value="false",
+        description="Replace per-arm Pinocchio SR-DLS IK with the cuRobo "
+                    "GPU IK service. Requires curobo_ik_ros sourced and two "
+                    "cuRobo instances running at /left/solve_ik and "
+                    "/right/solve_ik. Falls back to local IK if the service "
+                    "type isn't importable.",
+    )
 
     # Composed two-arm URDF via xacro — pass torso dims as args.
     xacro_file = PathJoinSubstitution([
@@ -372,6 +380,9 @@ def generate_launch_description() -> LaunchDescription:
                 LaunchConfiguration("quest_freeze_pos"), value_type=bool
             ),
             "quest_to_world_rpy": rpy,
+            "use_curobo_ik": ParameterValue(
+                LaunchConfiguration("use_curobo_ik"), value_type=bool
+            ),
         }
         return [
             Node(
@@ -414,6 +425,7 @@ def generate_launch_description() -> LaunchDescription:
         quest_freeze_orient_arg,
         quest_freeze_pos_arg,
         debug_circle_period_arg,
+        use_curobo_ik_arg,
         rsp_node,
         left_arm,
         right_arm,
