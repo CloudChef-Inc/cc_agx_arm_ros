@@ -161,7 +161,7 @@ class QuestLeaderNode(Node):
         super().__init__("quest_leader_node")
 
         self.declare_parameter("side", "right")
-        self.declare_parameter("ee_link", "gripper_flange")
+        self.declare_parameter("ee_link", "gripper_tip")
         self.declare_parameter("urdf_path", "")
         # Shoulder tilt about the arm's +X axis (degrees). Combined with
         # the ±π/2 yaw the arm is mounted at, this fully describes the

@@ -365,7 +365,16 @@ def generate_launch_description() -> LaunchDescription:
             rpy = [0.0, 0.0, 1.5707963267948966]
 
         common = {
-            "ee_link": "gripper_flange",
+            # gripper_tip is the virtual grasp point at the fingertip
+            # center (gripper_base + 0.185 m along Z). Matches the EE
+            # link cuRobo's nero_curobo.yml solves to. With this, the
+            # ghost EE position is where the operator visually expects
+            # "my hand goes here" to map to (between the fingertips),
+            # not the metal flange behind the gripper. Recalibration is
+            # required after switching from gripper_flange — the
+            # calibration EE pose is FK'd from current joints, so it
+            # shifts forward by the flange→tip offset.
+            "ee_link": "gripper_tip",
             "urdf_path": nero_urdf,
             "shoulder_tilt_deg": ParameterValue(
                 LaunchConfiguration("shoulder_tilt_deg"), value_type=float

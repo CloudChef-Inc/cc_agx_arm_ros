@@ -334,4 +334,23 @@
         <axis xyz="0 1 0"/>
         <limit lower="0" upper="0.05" effort="100" velocity="5"/>
     </joint>
+
+    <!-- gripper_tip — virtual grasp point at fingertip center.
+         Mirrors curobo_ik_ros/robots/nero/urdf/nero_single_isaac.urdf so
+         our Pinocchio FK and the cuRobo IK solve to the SAME frame.
+         Z offset = finger_root (0.1358) + finger_length (~0.05) = 0.185.
+         If the cuRobo URDF updates this measurement, update here too. -->
+    <link name="gripper_tip">
+        <inertial>
+            <mass value="0.001"/>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0"
+                     iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>
+    </link>
+    <joint name="gripper_tip_joint" type="fixed">
+        <parent link="gripper_base"/>
+        <child link="gripper_tip"/>
+        <origin xyz="0 0 0.185" rpy="0 0 0"/>
+    </joint>
 </robot>
