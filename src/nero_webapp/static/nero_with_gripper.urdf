@@ -347,6 +347,18 @@
             <inertia ixx="1e-6" ixy="0" ixz="0"
                      iyy="1e-6" iyz="0" izz="1e-6"/>
         </inertial>
+        <!-- Small bright marker so we can SEE where the IK solver is
+             aiming. The link itself is virtual; the sphere is purely
+             diagnostic and contributes no collision geometry. -->
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <sphere radius="0.012"/>
+            </geometry>
+            <material name="gripper_tip_marker">
+                <color rgba="1.0 0.2 0.2 0.85"/>
+            </material>
+        </visual>
     </link>
     <joint name="gripper_tip_joint" type="fixed">
         <parent link="gripper_base"/>
