@@ -107,14 +107,52 @@ def main():
         print("[set_zero] aborted")
         return
 
-    if not hasattr(arm, "calibrate_joint"):
-        print("[set_zero] ERROR: SDK has no calibrate_joint() — fall back "
-              "to AgileX Studio app.")
-        sys.exit(3)
+    # Nero's driver doesn't expose calibrate_joint() like Piper's does, but
+    # it inherits _send_msg from ArmDriverAbstract and the CAN message
+    # ArmMsgJointConfig (CAN ID 0x475, set_motor_current_pos_as_zero=0xAE)
+    # is published in the Nero msgs tree. Send it directly.
+    if hasattr(arm, "calibrate_joint"):
+        print(f"[set_zero] calling arm.calibrate_joint({args.joint_index})...")
+        ok = arm.calibrate_joint(args.joint_index)
+        print(f"[set_zero] calibrate_joint returned: {ok}")
+    else:
+        from pyAgxArm.protocols.can_protocol.msgs.nero.default.transmit.\
+            arm_joint_config import ArmMsgJointConfig
 
-    print(f"[set_zero] calling arm.calibrate_joint({args.joint_index})...")
-    ok = arm.calibrate_joint(args.joint_index)
-    print(f"[set_zero] calibrate_joint returned: {ok}")
+        # Disable the joint so its motor doesn't hold against the new zero.
+        # Per Piper's docstring example: disable, set zero, re-enable.
+        try:
+            print(f"[set_zero] disabling joint {args.joint_index}...")
+            arm.disable(args.joint_index)
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"[set_zero] disable failed (continuing): {e}")
+
+        print(f"[set_zero] sending ArmMsgJointConfig"
+              f"(joint_index={args.joint_index}, "
+              f"set_motor_current_pos_as_zero=0xAE)...")
+        arm._send_msg(ArmMsgJointConfig(
+            joint_index=args.joint_index,
+            set_motor_current_pos_as_zero=0xAE,
+        ))
+        time.sleep(1.5)  # let firmware persist NVM and ack
+
+        try:
+            print(f"[set_zero] re-enabling joint {args.joint_index}...")
+            arm.enable(args.joint_index)
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"[set_zero] re-enable failed: {e}")
+
+        js = arm.get_joint_angles()
+        if js is not None and js.hz > 0:
+            angles = [round(float(v), 4) for v in js.msg[:7]]
+            print(f"[set_zero] post-write angles (rad) = {angles}")
+            if 1 <= args.joint_index <= 7:
+                v = angles[args.joint_index - 1]
+                print(f"[set_zero] joint {args.joint_index} now reads "
+                      f"{v:+.4f} rad — should be near 0.0 if successful.")
+
     print("[set_zero] power-cycle the arm now, then re-run with --dry-run "
           "to verify the new zero stuck.")
 
