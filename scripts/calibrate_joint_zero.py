@@ -107,74 +107,39 @@ def main():
         print("[set_zero] aborted")
         return
 
-    # Nero's driver doesn't expose calibrate_joint() like Piper's does, but
-    # it inherits _send_msg from ArmDriverAbstract and the CAN message
-    # ArmMsgJointConfig (CAN ID 0x475, set_motor_current_pos_as_zero=0xAE)
-    # is published in the Nero msgs tree. Send it directly.
+    # Confirmed empirically (2026-04-30): pyAgxArm v1.11 does not wire
+    # ArmMsgJointConfig (the set-zero frame) into Nero's parser. Calling
+    # arm._send_msg(ArmMsgJointConfig(...)) returns silently because
+    # arm._parser.pack(...) returns None. The schema file exists in
+    # msgs/nero/default/transmit/arm_joint_config.py but no encoder is
+    # registered for it, and Nero's driver doesn't import it. So this
+    # code path can only commit the new zero on Piper-family arms; on
+    # Nero, the operator must use the AgileX Studio web app (the same
+    # interface used for the V1.11 firmware upgrade) and click its
+    # "Set Zero" / 零位标定 button while the joint is at its zero pose.
     if hasattr(arm, "calibrate_joint"):
         print(f"[set_zero] calling arm.calibrate_joint({args.joint_index})...")
         ok = arm.calibrate_joint(args.joint_index)
         print(f"[set_zero] calibrate_joint returned: {ok}")
-    else:
-        from pyAgxArm.protocols.can_protocol.msgs.nero.default.transmit.\
-            arm_joint_config import ArmMsgJointConfig
+        print("[set_zero] power-cycle the arm now, then re-run with "
+              "--dry-run to verify the new zero stuck.")
+        return
 
-        # First attempt sent the frame with only the target joint disabled
-        # and the rest enabled — firmware silently ignored it. Try the
-        # stricter pattern: disable ALL joints first. SUPPORT THE ARM
-        # PHYSICALLY before this — disabled joints are back-drivable.
-        print()
-        print(f"  About to disable ALL joints. Joint {args.joint_index} "
-              f"will go limp.")
-        print(f"  Make sure the arm is supported (resting on the bench, "
-              f"or held). Confirm joint {args.joint_index} is at its "
-              f"intended zero pose.")
-        confirm2 = input("  Type READY to continue: ")
-        if confirm2.strip() != "READY":
-            print("[set_zero] aborted")
-            return
-
-        try:
-            print("[set_zero] disabling ALL joints (255)...")
-            arm.disable(255)
-            time.sleep(0.8)
-        except Exception as e:
-            print(f"[set_zero] disable failed (continuing): {e}")
-
-        # Verify disable took effect — log enable status of target joint.
-        try:
-            es = arm.get_joint_enable_status(args.joint_index)
-            print(f"[set_zero] joint {args.joint_index} enable_status post-disable = {es}")
-        except Exception as e:
-            print(f"[set_zero] could not read enable_status: {e}")
-
-        print(f"[set_zero] sending ArmMsgJointConfig"
-              f"(joint_index={args.joint_index}, "
-              f"set_motor_current_pos_as_zero=0xAE)...")
-        arm._send_msg(ArmMsgJointConfig(
-            joint_index=args.joint_index,
-            set_motor_current_pos_as_zero=0xAE,
-        ))
-        time.sleep(2.0)  # let firmware persist NVM and ack
-
-        try:
-            print("[set_zero] re-enabling all joints...")
-            arm.enable(255)
-            time.sleep(1.0)
-        except Exception as e:
-            print(f"[set_zero] re-enable failed: {e}")
-
-        js = arm.get_joint_angles()
-        if js is not None and js.hz > 0:
-            angles = [round(float(v), 4) for v in js.msg[:7]]
-            print(f"[set_zero] post-write angles (rad) = {angles}")
-            if 1 <= args.joint_index <= 7:
-                v = angles[args.joint_index - 1]
-                print(f"[set_zero] joint {args.joint_index} now reads "
-                      f"{v:+.4f} rad — should be near 0.0 if successful.")
-
-    print("[set_zero] power-cycle the arm now, then re-run with --dry-run "
-          "to verify the new zero stuck.")
+    print()
+    print("[set_zero] ERROR: this SDK build does NOT support set-zero on Nero.")
+    print("[set_zero] arm._parser.pack(ArmMsgJointConfig(...)) returns None")
+    print("[set_zero] (no encoder registered; Nero driver doesn't import it).")
+    print()
+    print("[set_zero] Use the AgileX Studio web app instead:")
+    print("[set_zero]   1. Power-cycle the arm; connect the Studio")
+    print("[set_zero]      WiFi hotspot (same one used for firmware upgrades).")
+    print("[set_zero]   2. Open Studio in a browser.")
+    print("[set_zero]   3. Pose the target joint at its mechanical zero")
+    print("[set_zero]      (other joints can stay where they are).")
+    print(f"[set_zero]   4. Click 'Set Zero' / 零位标定 for joint "
+          f"{args.joint_index}.")
+    print("[set_zero]   5. Power-cycle and verify with --dry-run.")
+    sys.exit(4)
 
 
 if __name__ == "__main__":
