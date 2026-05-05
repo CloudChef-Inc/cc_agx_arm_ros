@@ -119,14 +119,34 @@ def main():
         from pyAgxArm.protocols.can_protocol.msgs.nero.default.transmit.\
             arm_joint_config import ArmMsgJointConfig
 
-        # Disable the joint so its motor doesn't hold against the new zero.
-        # Per Piper's docstring example: disable, set zero, re-enable.
+        # First attempt sent the frame with only the target joint disabled
+        # and the rest enabled — firmware silently ignored it. Try the
+        # stricter pattern: disable ALL joints first. SUPPORT THE ARM
+        # PHYSICALLY before this — disabled joints are back-drivable.
+        print()
+        print(f"  About to disable ALL joints. Joint {args.joint_index} "
+              f"will go limp.")
+        print(f"  Make sure the arm is supported (resting on the bench, "
+              f"or held). Confirm joint {args.joint_index} is at its "
+              f"intended zero pose.")
+        confirm2 = input("  Type READY to continue: ")
+        if confirm2.strip() != "READY":
+            print("[set_zero] aborted")
+            return
+
         try:
-            print(f"[set_zero] disabling joint {args.joint_index}...")
-            arm.disable(args.joint_index)
-            time.sleep(0.5)
+            print("[set_zero] disabling ALL joints (255)...")
+            arm.disable(255)
+            time.sleep(0.8)
         except Exception as e:
             print(f"[set_zero] disable failed (continuing): {e}")
+
+        # Verify disable took effect — log enable status of target joint.
+        try:
+            es = arm.get_joint_enable_status(args.joint_index)
+            print(f"[set_zero] joint {args.joint_index} enable_status post-disable = {es}")
+        except Exception as e:
+            print(f"[set_zero] could not read enable_status: {e}")
 
         print(f"[set_zero] sending ArmMsgJointConfig"
               f"(joint_index={args.joint_index}, "
@@ -135,12 +155,12 @@ def main():
             joint_index=args.joint_index,
             set_motor_current_pos_as_zero=0xAE,
         ))
-        time.sleep(1.5)  # let firmware persist NVM and ack
+        time.sleep(2.0)  # let firmware persist NVM and ack
 
         try:
-            print(f"[set_zero] re-enabling joint {args.joint_index}...")
-            arm.enable(args.joint_index)
-            time.sleep(0.5)
+            print("[set_zero] re-enabling all joints...")
+            arm.enable(255)
+            time.sleep(1.0)
         except Exception as e:
             print(f"[set_zero] re-enable failed: {e}")
 
